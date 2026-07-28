@@ -1,0 +1,14 @@
+services:
+  meshdesk:
+    build:
+      context: .
+    network_mode: host
+    restart: unless-stopped
+    security_opt:
+      - apparmor=unconfined
+    volumes:
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      - ./logs:/app/logs
+    environment:
+      DBUS_SYSTEM_BUS_ADDRESS: unix:path=/run/dbus/system_bus_socket
+    command: ["--host", "127.0.0.1", "--port", "8765"]

@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="bg">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MeshDesk</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <header>
+      <div>
+        <p class="eyebrow">LOCAL MESHTASTIC CONSOLE</p>
+        <h1>MeshDesk</h1>
+      </div>
+      <div id="statusPill" class="status disconnected">
+        <span></span><strong>Изключено</strong>
+      </div>
+    </header>
+
+    <main>
+      <section id="connectionPanel" class="panel connection-panel">
+        <div id="connectionCompact" class="connection-compact hidden">
+          <div class="radio-summary">
+            <span class="radio-signal" aria-hidden="true"></span>
+            <div>
+              <strong id="connectedDeviceName">Meshtastic радио</strong>
+              <span><b id="connectedTransport">TCP</b> · <span id="connectedTarget">—</span></span>
+            </div>
+          </div>
+          <div class="connection-compact-actions">
+            <button id="connectionToggle" type="button" class="ghost">Настройки</button>
+            <button id="disconnectButton" type="button" class="ghost" disabled>Прекъсни</button>
+          </div>
+        </div>
+
+        <div id="connectionDetails" class="connection-details">
+        <div class="section-title">
+          <div>
+            <p class="eyebrow">ВРЪЗКА</p>
+            <h2>Свържи радио</h2>
+          </div>
+        </div>
+
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-transport="tcp">TCP / Wi-Fi</button>
+          <button class="tab" data-transport="ble">Bluetooth LE</button>
+        </div>
+
+        <form id="connectForm">
+          <div id="tcpFields" class="field-row">
+            <label>
+              IP адрес / име
+              <input id="tcpHost" value="172.16.19.176" autocomplete="off">
+            </label>
+            <label class="port">
+              Порт
+              <input id="tcpPort" type="number" value="4403" min="1" max="65535">
+            </label>
+          </div>
+
+          <div id="bleFields" class="field-row hidden">
+            <label class="grow">
+              Meshtastic Bluetooth устройство
+              <select id="bleDevice">
+                <option value="">Първо натисни „Сканирай“</option>
+              </select>
+            </label>
+            <button id="scanButton" type="button" class="secondary">Сканирай</button>
+            <button id="pairButton" type="button" class="secondary">Сдвои</button>
+          </div>
+
+          <div id="pairingBox" class="pairing-box hidden">
+            <div>
+              <strong id="pairingTitle">Bluetooth сдвояване</strong>
+              <p id="pairingStatus">Стартирай сдвояване и изчакай PIN на екрана на радиото.</p>
+            </div>
+            <label class="checkbox forget-option">
+              <input id="forgetExisting" type="checkbox">
+              Забрави старото сдвояване
+            </label>
+          </div>
+
+          <div class="action-row">
+            <button id="connectButton" class="primary" type="submit">Свържи</button>
+            <p id="connectionDetail">Нативен Meshtastic TCP порт 4403 — без HTTP/CORS.</p>
+          </div>
+        </form>
+        </div>
+      </section>
+
+      <section class="panel chat-panel">
+        <div class="chat-layout">
+          <aside class="conversation-sidebar">
+            <div class="conversation-heading">
+              <div>
+                <p class="eyebrow">СЪОБЩЕНИЯ</p>
+                <h2>Разговори</h2>
+              </div>
+              <button id="newDirectButton" type="button" class="icon-button"
+                title="Нов личен разговор" disabled>＋</button>
+            </div>
+            <label class="conversation-search">
+              <span class="sr-only">Търси разговор</span>
+              <input id="conversationSearch" type="search" placeholder="Търси разговор…">
+            </label>
+            <div id="conversationList" class="conversation-list empty-state">
+              Каналите ще се покажат след свързване.
+            </div>
+            <button id="markRead" type="button" class="sidebar-action">Маркирай всички като прочетени</button>
+          </aside>
+
+          <div class="chat-workspace">
+            <div class="chat-header">
+              <div id="chatAvatar" class="chat-avatar">#</div>
+              <div class="chat-identity">
+                <h2 id="chatTitle">Избери разговор</h2>
+                <p id="chatSubtitle">Свържи радио, за да четеш и изпращаш съобщения.</p>
+              </div>
+              <button id="markConversationRead" type="button" class="ghost"
+                title="Маркирай разговора като прочетен">Прочетено</button>
+            </div>
+
+            <div id="chatMessages" class="chat-messages empty-state">
+              Тук ще се появи историята на избрания канал или личен разговор.
+            </div>
+
+            <form id="messageForm" class="chat-composer">
+              <textarea id="messageText" rows="2" placeholder="Избери разговор…" disabled></textarea>
+              <div class="composer-toolbar">
+                <label class="composer-channel">
+                  Канал
+                  <select id="channel" disabled>
+                    <option value="0">0 · Primary</option>
+                  </select>
+                </label>
+                <label class="checkbox composer-ack">
+                  <input id="wantAck" type="checkbox" checked disabled>
+                  ACK
+                </label>
+                <span id="byteCount">0 / 230 bytes</span>
+                <button id="sendButton" type="submit" class="primary" disabled>Изпрати</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel nodes-panel">
+        <div class="section-title">
+          <div>
+            <p class="eyebrow">МРЕЖА</p>
+            <h2>Възли <span id="nodeCount">0</span></h2>
+          </div>
+          <button id="refreshNodes" class="ghost" disabled>Обнови</button>
+        </div>
+        <div class="network-toolbar">
+          <label class="network-search">
+            Търсене
+            <input id="nodeSearch" type="search"
+              placeholder="Име, short name, node ID или хардуер…">
+          </label>
+          <label>
+            Връзка
+            <select id="nodeTransportFilter">
+              <option value="all">Всички</option>
+              <option value="direct">Директни</option>
+              <option value="mesh">През mesh</option>
+              <option value="mqtt">През MQTT</option>
+              <option value="stale">Неактивни</option>
+            </select>
+          </label>
+          <label>
+            Подреждане
+            <select id="nodeSort">
+              <option value="recent">Последно чути</option>
+              <option value="name">Име</option>
+              <option value="signal">Сигнал</option>
+              <option value="hops">Брой хопове</option>
+              <option value="battery">Батерия</option>
+            </select>
+          </label>
+        </div>
+        <div id="networkSummary" class="network-summary"></div>
+        <div id="nodes" class="nodes empty-state">
+          Свържи устройство, за да заредиш node database.
+        </div>
+      </section>
+
+      <details class="panel diagnostics-panel">
+        <summary>
+          <div>
+            <p class="eyebrow">ДИАГНОСТИКА</p>
+            <h2>Пакети и състояние</h2>
+          </div>
+          <span class="details-hint">Покажи</span>
+        </summary>
+        <div class="diagnostics-actions">
+          <p>Сурови Meshtastic събития за проверка на връзката и доставката.</p>
+          <button id="clearEvents" type="button" class="ghost">Изчисти</button>
+        </div>
+        <div id="events" class="events empty-state">Все още няма събития.</div>
+      </details>
+
+      <details id="configPanel" class="panel config-panel">
+        <summary class="config-summary">
+          <div>
+            <p class="eyebrow">НАСТРОЙКИ</p>
+            <h2>Конфигурация на устройството</h2>
+          </div>
+          <span class="details-hint">Покажи</span>
+        </summary>
+        <div class="config-panel-body">
+        <div class="config-toolbar">
+          <label>
+            Управлявано устройство
+            <select id="configTarget" disabled>
+              <option value="">Локално радио</option>
+            </select>
+          </label>
+          <div class="config-toolbar-actions">
+            <button id="reloadConfig" type="button" class="ghost" disabled>Презареди</button>
+            <button id="exportConfig" type="button" class="ghost" disabled>Export</button>
+            <button id="importConfig" type="button" class="ghost" disabled>Import</button>
+            <input id="importConfigFile" class="hidden" type="file"
+              accept="application/json,.json">
+          </div>
+        </div>
+        <div id="remoteConfigControls" class="remote-config-controls hidden">
+          <div>
+            <strong>Remote admin през PKI</strong>
+            <p>Remote node трябва да е разрешил публичния ключ на локалното радио.</p>
+          </div>
+          <label>
+            Секция
+            <select id="remoteConfigSection">
+              <option value="device">Device</option>
+              <option value="position">Position / GPS</option>
+              <option value="power">Power</option>
+              <option value="network">Network / Wi-Fi</option>
+              <option value="display">Display</option>
+              <option value="lora">LoRa radio</option>
+              <option value="bluetooth">Bluetooth</option>
+              <option value="security">Security</option>
+              <option value="mqtt">MQTT</option>
+              <option value="telemetry">Telemetry</option>
+              <option value="neighbor_info">Neighbor info</option>
+              <option value="store_forward">Store & forward</option>
+              <option value="range_test">Range test</option>
+            </select>
+          </label>
+          <button id="loadRemoteConfig" type="button" class="secondary">
+            Зареди секцията
+          </button>
+          <div class="public-key-row">
+            <span>Локален public key</span>
+            <code id="localPublicKey">—</code>
+            <button id="copyPublicKey" type="button" class="ghost">Копирай</button>
+          </div>
+        </div>
+        <div class="config-warning">
+          Промените се записват директно в радиото. Network, LoRa и Bluetooth
+          настройките могат да прекъснат текущата връзка.
+        </div>
+        <div class="config-layout">
+          <nav id="configSections" class="config-sections empty-state">
+            Свържи устройство, за да заредиш конфигурацията.
+          </nav>
+          <form id="configForm" class="config-form empty-state">
+            Избери секция.
+          </form>
+        </div>
+        </div>
+      </details>
+    </main>
+
+    <div id="pairingModal" class="modal-backdrop hidden" role="dialog" aria-modal="true"
+      aria-labelledby="pairingModalTitle">
+      <div class="modal-card">
+        <p class="eyebrow">BLUETOOTH PAIRING</p>
+        <h2 id="pairingModalTitle">Въведи PIN от радиото</h2>
+        <p id="pairingModalStatus">
+          Изчакай кодът да се появи на екрана на Meshtastic устройството.
+        </p>
+        <label>
+          PIN от екрана / Fixed PIN
+          <input id="pairingPin" inputmode="numeric" autocomplete="one-time-code"
+            maxlength="16" placeholder="000000">
+        </label>
+        <div class="modal-actions">
+          <button id="cancelPairing" type="button" class="ghost">Откажи</button>
+          <button id="submitPin" type="button" class="primary">Потвърди PIN</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="directModal" class="modal-backdrop hidden" role="dialog" aria-modal="true"
+      aria-labelledby="directModalTitle">
+      <div class="modal-card">
+        <p class="eyebrow">DIRECT MESSAGE</p>
+        <h2 id="directModalTitle">Нов личен разговор</h2>
+        <p>Избери възел от node database или въведи неговия Meshtastic node ID.</p>
+        <label>
+          Получател
+          <select id="directRecipient">
+            <option value="__manual">Въведи node ID…</option>
+          </select>
+        </label>
+        <label id="directManualLabel">
+          Node ID
+          <input id="directManual" placeholder="!1234abcd" pattern="![0-9a-fA-F]{8}"
+            autocomplete="off">
+        </label>
+        <div class="modal-actions">
+          <button id="cancelDirect" type="button" class="ghost">Откажи</button>
+          <button id="openDirect" type="button" class="primary">Отвори разговор</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="inspectorBackdrop" class="inspector-backdrop hidden"></div>
+    <aside id="inspectorPanel" class="inspector-panel" aria-hidden="true"
+      aria-labelledby="inspectorTitle">
+      <div class="inspector-header">
+        <div>
+          <p id="inspectorEyebrow" class="eyebrow">ИНСПЕКТОР</p>
+          <h2 id="inspectorTitle">Подробности</h2>
+          <p id="inspectorSubtitle"></p>
+        </div>
+        <button id="closeInspector" type="button" class="icon-button"
+          aria-label="Затвори подробностите">×</button>
+      </div>
+      <div id="inspectorContent" class="inspector-content"></div>
+    </aside>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
