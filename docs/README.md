@@ -9,6 +9,10 @@
   завършеност.
 - [Connection profiles](CONNECTION-PROFILES.md) — локално запазени TCP/BLE
   endpoints и граници за бъдещия auto-reconnect.
+- [TCP mDNS discovery](TCP-DISCOVERY.md) — откриване на
+  `_meshtastic._tcp.local.` без системни пакети.
+- [Connection health](CONNECTION-HEALTH.md) — lifecycle states, timestamps и
+  допустимост за бъдещ reconnect.
 - [UI information architecture](UX-STRUCTURE.md) — правила за подреждане на
   основни, вторични и бъдещи fleet секции.
 - [Android/Desktop parity backlog](ANDROID-PARITY-BACKLOG.md) — пълната опашка

@@ -9,7 +9,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from meshdesk import __version__
-from meshdesk.connection_profiles import ConnectionProfileStore
+from meshdesk.connection_profiles import (
+    ConnectionIdentityMismatchError,
+    ConnectionProfileStore,
+)
+from meshdesk.discovery import TcpDiscovery
 from meshdesk.manager import MeshtasticManager
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -29,6 +33,10 @@ class ConnectionProfileRequest(BaseModel):
     host: str = ""
     port: int = Field(default=4403, ge=1, le=65535)
     address: str = ""
+
+
+class ConnectionIdentityRequest(BaseModel):
+    allow_rebind: bool = False
 
 
 class MessageRequest(BaseModel):
@@ -106,9 +114,11 @@ class HistoryReplayRequest(BaseModel):
 def create_app(
     manager: MeshtasticManager | None = None,
     connection_profiles: ConnectionProfileStore | None = None,
+    tcp_discovery: TcpDiscovery | None = None,
 ) -> FastAPI:
     radio = manager or MeshtasticManager()
     profiles = connection_profiles or ConnectionProfileStore()
+    discovery = tcp_discovery or TcpDiscovery()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -159,6 +169,16 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    @api.get("/api/discovery/tcp")
+    def discover_tcp(timeout: float = Query(default=3.0, ge=0.5, le=10)) -> dict:
+        try:
+            return {"devices": discovery.discover(timeout)}
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"mDNS discovery is unavailable: {exc}",
+            ) from exc
+
     @api.post("/api/connection-profiles", status_code=201)
     def create_connection_profile(request: ConnectionProfileRequest) -> dict:
         try:
@@ -184,6 +204,62 @@ def create_app(
             profiles.delete(profile_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Connection profile not found") from exc
+
+    @api.post("/api/connection-profiles/{profile_id}/verify")
+    def verify_connection_profile(
+        profile_id: str,
+        request: ConnectionIdentityRequest,
+    ) -> dict:
+        try:
+            profile = profiles.get(profile_id)
+            current = radio.status()
+            if current.get("state") != "connected" or not current.get("profile_id"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="A connected Meshtastic radio is required for identity verification",
+                )
+            expected_target = (
+                f"{profile['host']}:{profile['port']}"
+                if profile["transport"] == "tcp"
+                else profile["address"]
+            )
+            actual_target = str(current.get("target") or "")
+            target_matches = (
+                current.get("transport") == profile["transport"]
+                and (
+                    actual_target == expected_target
+                    if profile["transport"] == "tcp"
+                    else actual_target.casefold() == expected_target.casefold()
+                )
+            )
+            if not target_matches:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The connected endpoint does not match this profile",
+                )
+            verified = profiles.verify_identity(
+                profile_id,
+                str(current["profile_id"]),
+                current.get("profile_name"),
+                allow_rebind=request.allow_rebind,
+            )
+            return {"profile": verified}
+        except ConnectionIdentityMismatchError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "identity_mismatch",
+                    "message": str(exc),
+                    "expected_id": exc.expected_id,
+                    "expected_name": exc.expected_name,
+                    "observed_id": exc.observed_id,
+                    "observed_name": exc.observed_name,
+                },
+            ) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Connection profile not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api.post("/api/connect", status_code=202)
     def connect(request: ConnectRequest) -> dict:

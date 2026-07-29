@@ -22,11 +22,11 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 ## M1 — Connection reliability
 
 - [ ] USB Serial транспорт без системно инсталиране на Python пакети.
-- [ ] mDNS discovery за `_meshtastic._tcp`.
+- [x] mDNS discovery за `_meshtastic._tcp` без системни пакети.
 - [x] Именувани connection profiles с локално persistence и last-used metadata.
-- [ ] Recent-device identity след успешен Meshtastic handshake.
+- [x] Verified device identity след handshake, mismatch защита и explicit rebind.
 - [ ] Контролирано auto-reconnect с backoff и видимо състояние.
-- [ ] Health/liveness проверка и ясна причина за прекъсване.
+- [x] Health/liveness state, activity timestamps и ясна причина за прекъсване.
 
 Критерий: TCP, BLE и Serial използват еднакъв lifecycle и не губят handshake
 пакети или история.

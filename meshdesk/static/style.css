@@ -208,6 +208,113 @@ button:disabled { opacity: 0.38; cursor: not-allowed; }
   font-size: 0.68rem;
   line-height: 1.4;
 }
+.connection-identity-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: -5px 0 15px;
+  padding: 10px 12px;
+  border: 1px solid #365247;
+  border-radius: 10px;
+  background: rgba(16, 39, 31, 0.58);
+}
+.connection-identity-status.hidden { display: none; }
+.connection-identity-status strong { font-size: 0.72rem; }
+.connection-identity-status p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  line-height: 1.4;
+}
+.connection-identity-status.verified {
+  border-color: #3d6335;
+  background: rgba(33, 67, 27, 0.24);
+}
+.connection-identity-status.verified strong { color: #bde995; }
+.connection-identity-status.pending,
+.connection-identity-status.modified {
+  border-color: #5a4d2e;
+  background: rgba(70, 52, 20, 0.22);
+}
+.connection-identity-status.mismatch {
+  border-color: #7c4141;
+  background: rgba(91, 31, 31, 0.28);
+}
+.connection-identity-status.mismatch strong { color: #ffaaaa; }
+.connection-health-panel {
+  margin: -5px 0 15px;
+  border: 1px solid #30463e;
+  border-radius: 10px;
+  background: rgba(7, 20, 16, 0.72);
+}
+.connection-health-panel.hidden { display: none; }
+.connection-health-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.connection-health-panel summary::-webkit-details-marker { display: none; }
+.connection-health-summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.connection-health-summary > div { display: flex; flex-direction: column; gap: 2px; }
+.connection-health-summary strong { font-size: 0.71rem; }
+.connection-health-summary small { color: var(--muted); font-size: 0.62rem; }
+.connection-health-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #71817b;
+}
+.connection-health-dot.healthy {
+  background: var(--green);
+  box-shadow: 0 0 10px rgba(169, 247, 75, 0.62);
+}
+.connection-health-dot.connecting { background: var(--amber); animation: pulse 1s infinite; }
+.connection-health-dot.lost,
+.connection-health-dot.failed { background: var(--red); }
+.connection-health-toggle { color: var(--muted); font-size: 0.62rem; }
+.connection-health-panel[open] .connection-health-toggle { font-size: 0; }
+.connection-health-panel[open] .connection-health-toggle::after {
+  content: "Скрий";
+  font-size: 0.62rem;
+}
+.connection-health-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+  padding: 0 12px 12px;
+}
+.connection-health-metrics > div {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #263a33;
+  border-radius: 8px;
+  background: #0b1915;
+}
+.connection-health-metrics dt {
+  margin-bottom: 4px;
+  color: #6f857d;
+  font-size: 0.56rem;
+}
+.connection-health-metrics dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #c8d5d0;
+  font-size: 0.64rem;
+}
+.connection-health-panel.lost,
+.connection-health-panel.failed { border-color: #6c3939; }
+.connection-health-panel.connecting { border-color: #67552c; }
 
 label {
   display: flex;
@@ -233,6 +340,79 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 .action-row { margin-top: 14px; align-items: center; }
 .action-row p { color: var(--muted); font-size: 0.76rem; }
 .hidden { display: none; }
+.tcp-discovery-results {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 8px 12px;
+  align-items: end;
+  margin-top: 10px;
+  padding: 11px 12px;
+  border: 1px solid #304940;
+  border-radius: 10px;
+  background: rgba(8, 25, 19, 0.66);
+}
+.tcp-discovery-results.hidden { display: none; }
+.tcp-discovery-results p {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.65rem;
+  line-height: 1.45;
+}
+.tcp-discovery-details {
+  grid-column: 1 / -1;
+  padding: 11px 12px;
+  border: 1px solid #345045;
+  border-radius: 9px;
+  background: #07120f;
+}
+.tcp-discovery-identity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.tcp-discovery-identity > div { display: flex; flex-direction: column; gap: 3px; }
+.tcp-discovery-identity span {
+  color: var(--green);
+  font: 700 0.55rem ui-monospace, monospace;
+  letter-spacing: 0.08em;
+}
+.tcp-discovery-identity strong { font-size: 0.78rem; }
+.tcp-discovery-identity code {
+  color: #c4d2cd;
+  font-size: 0.66rem;
+}
+.tcp-discovery-identity em {
+  max-width: 310px;
+  color: var(--muted);
+  font-size: 0.63rem;
+  font-style: normal;
+  text-align: right;
+}
+.tcp-discovery-details dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+.tcp-discovery-details dl > div {
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: #0d1d18;
+}
+.tcp-discovery-details dt {
+  margin-bottom: 3px;
+  color: #6f867e;
+  font-size: 0.57rem;
+}
+.tcp-discovery-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #cad6d2;
+  font: 0.64rem ui-monospace, monospace;
+}
 
 .pairing-box {
   display: grid;
@@ -1224,8 +1404,16 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   .panel { padding: 16px; }
   .field-row { align-items: stretch; flex-direction: column; }
   .port { width: 100%; }
+  .tcp-discovery-results { grid-template-columns: 1fr; }
+  .tcp-discovery-results p { grid-column: 1; }
+  .tcp-discovery-details { grid-column: 1; }
+  .tcp-discovery-details dl { grid-template-columns: 1fr; }
+  .tcp-discovery-identity { align-items: flex-start; flex-direction: column; }
+  .tcp-discovery-identity em { text-align: left; }
   .connection-profile-toolbar { align-items: stretch; flex-direction: column; }
   .connection-profile-actions { flex-wrap: wrap; }
+  .connection-identity-status { align-items: stretch; flex-direction: column; }
+  .connection-health-metrics { grid-template-columns: 1fr; }
   .connection-compact { align-items: flex-start; }
   .connection-compact-actions { flex-direction: column; align-items: stretch; }
   .chat-layout {

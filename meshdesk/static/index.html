@@ -24,7 +24,11 @@
             <span class="radio-signal" aria-hidden="true"></span>
             <div>
               <strong id="connectedDeviceName">Meshtastic радио</strong>
-              <span><b id="connectedTransport">TCP</b> · <span id="connectedTarget">—</span></span>
+              <span>
+                <b id="connectedTransport">TCP</b> ·
+                <span id="connectedTarget">—</span> ·
+                <span id="connectionHealthCompact">проверка…</span>
+              </span>
             </div>
           </div>
           <div class="connection-compact-actions">
@@ -59,6 +63,36 @@
         <p id="connectionProfileHint" class="connection-profile-hint">
           Профилите пазят само адреса и транспорта локално — без PIN, PSK или ключове.
         </p>
+        <div id="connectionIdentityStatus" class="connection-identity-status hidden"
+          role="status" aria-live="polite">
+          <div>
+            <strong id="connectionIdentityTitle"></strong>
+            <p id="connectionIdentityDetail"></p>
+          </div>
+          <button id="rebindConnectionProfile" type="button"
+            class="danger-outline hidden">Приеми новото радио</button>
+        </div>
+
+        <details id="connectionHealthPanel" class="connection-health-panel hidden">
+          <summary>
+            <div class="connection-health-summary">
+              <span id="connectionHealthDot" class="connection-health-dot"></span>
+              <div>
+                <strong id="connectionHealthTitle">Няма активна сесия</strong>
+                <small id="connectionHealthReason"></small>
+              </div>
+            </div>
+            <span class="connection-health-toggle">Подробности</span>
+          </summary>
+          <dl class="connection-health-metrics">
+            <div><dt>Endpoint</dt><dd id="healthTarget">—</dd></div>
+            <div><dt>Начало на сесията</dt><dd id="healthConnectedAt">—</dd></div>
+            <div><dt>Последна активност</dt><dd id="healthLastActivity">—</dd></div>
+            <div><dt>Последен RX пакет</dt><dd id="healthLastRx">—</dd></div>
+            <div><dt>Край / прекъсване</dt><dd id="healthDisconnectedAt">—</dd></div>
+            <div><dt>Reconnect</dt><dd id="healthReconnectPolicy">Не е активиран</dd></div>
+          </dl>
+        </details>
 
         <div class="tabs" role="tablist">
           <button class="tab active" data-transport="tcp">TCP / Wi-Fi</button>
@@ -75,6 +109,22 @@
               Порт
               <input id="tcpPort" type="number" value="4403" min="1" max="65535">
             </label>
+            <button id="discoverTcpButton" type="button" class="secondary">
+              Открий
+            </button>
+          </div>
+
+          <div id="tcpDiscoveryResults" class="tcp-discovery-results hidden">
+            <label class="grow">
+              Открити Meshtastic TCP устройства
+              <select id="tcpDiscoveredDevice"></select>
+            </label>
+            <button id="useDiscoveredTcp" type="button" class="ghost">Използвай</button>
+            <div id="tcpDiscoveryDetails" class="tcp-discovery-details"></div>
+            <p>
+              mDNS service name не винаги е настроеното Meshtastic long name.
+              Името и node ID се потвърждават след handshake.
+            </p>
           </div>
 
           <div id="bleFields" class="field-row hidden">

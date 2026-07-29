@@ -71,6 +71,40 @@ class StubManager:
         self.calls.append(("administration", action, node_id, preserve))
 
 
+class ConnectedIdentityManager(StubManager):
+    def __init__(self):
+        super().__init__()
+        self.device_id = "!1234abcd"
+        self.device_name = "Test Gateway"
+
+    def status(self):
+        return {
+            "state": "connected",
+            "transport": "tcp",
+            "target": "172.16.19.176:4403",
+            "profile_id": self.device_id,
+            "profile_name": self.device_name,
+            "event_sequence": 0,
+        }
+
+
+class StubTcpDiscovery:
+    def __init__(self):
+        self.timeouts = []
+
+    def discover(self, timeout):
+        self.timeouts.append(timeout)
+        return [
+            {
+                "name": "Home Gateway",
+                "host": "172.16.19.176",
+                "hostname": "meshtastic.local",
+                "port": 4403,
+                "addresses": ["172.16.19.176"],
+            }
+        ]
+
+
 def test_tcp_connection_endpoint():
     manager = StubManager()
     with TestClient(create_app(manager)) as client:
@@ -80,6 +114,17 @@ def test_tcp_connection_endpoint():
         )
     assert response.status_code == 202
     assert manager.calls[0] == ("tcp", "172.16.19.176", 4403)
+
+
+def test_tcp_mdns_discovery_endpoint():
+    manager = StubManager()
+    discovery = StubTcpDiscovery()
+    with TestClient(create_app(manager, tcp_discovery=discovery)) as client:
+        response = client.get("/api/discovery/tcp?timeout=1.5")
+
+    assert response.status_code == 200
+    assert response.json()["devices"][0]["host"] == "172.16.19.176"
+    assert discovery.timeouts == [1.5]
 
 
 def test_connection_profile_crud_and_usage(tmp_path):
@@ -141,6 +186,43 @@ def test_saved_profile_cannot_be_attributed_to_another_endpoint(tmp_path):
 
     assert response.status_code == 409
     assert ("tcp", "another-host.local", 4403) not in manager.calls
+
+
+def test_connection_profile_identity_verification_and_rebind(tmp_path):
+    manager = ConnectedIdentityManager()
+    store = ConnectionProfileStore(tmp_path / "connection-profiles.json")
+    profile = store.create(
+        {
+            "name": "Домашна база",
+            "transport": "tcp",
+            "host": "172.16.19.176",
+            "port": 4403,
+        }
+    )
+
+    with TestClient(create_app(manager, store)) as client:
+        verified = client.post(
+            f"/api/connection-profiles/{profile['id']}/verify",
+            json={"allow_rebind": False},
+        )
+        manager.device_id = "!87654321"
+        manager.device_name = "Replacement"
+        mismatch = client.post(
+            f"/api/connection-profiles/{profile['id']}/verify",
+            json={"allow_rebind": False},
+        )
+        rebound = client.post(
+            f"/api/connection-profiles/{profile['id']}/verify",
+            json={"allow_rebind": True},
+        )
+
+    assert verified.status_code == 200
+    assert verified.json()["profile"]["device_id"] == "!1234abcd"
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"]["code"] == "identity_mismatch"
+    assert mismatch.json()["detail"]["expected_id"] == "!1234abcd"
+    assert mismatch.json()["detail"]["observed_id"] == "!87654321"
+    assert rebound.json()["profile"]["device_id"] == "!87654321"
 
 
 def test_send_message_endpoint():

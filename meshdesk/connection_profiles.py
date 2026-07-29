@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -11,6 +12,24 @@ from typing import Any
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+class ConnectionIdentityMismatchError(ValueError):
+    def __init__(
+        self,
+        expected_id: str,
+        observed_id: str,
+        expected_name: str | None,
+        observed_name: str | None,
+    ) -> None:
+        super().__init__(
+            f"Profile expects {expected_name or expected_id}, "
+            f"but the connected radio is {observed_name or observed_id}"
+        )
+        self.expected_id = expected_id
+        self.observed_id = observed_id
+        self.expected_name = expected_name
+        self.observed_name = observed_name
 
 
 class ConnectionProfileStore:
@@ -118,6 +137,10 @@ class ConnectionProfileStore:
             "created_at": timestamp,
             "updated_at": timestamp,
             "last_used_at": None,
+            "device_id": None,
+            "device_name": None,
+            "identity_first_verified_at": None,
+            "identity_last_verified_at": None,
         }
         with self._lock:
             profiles = self._load_unlocked()
@@ -159,6 +182,48 @@ class ConnectionProfileStore:
             profile = {
                 **profile,
                 "last_used_at": _now(),
+            }
+            profiles[profile_id] = profile
+            self._write_unlocked(profiles)
+        return dict(profile)
+
+    def verify_identity(
+        self,
+        profile_id: str,
+        device_id: str,
+        device_name: str | None,
+        *,
+        allow_rebind: bool = False,
+    ) -> dict[str, Any]:
+        device_id = device_id.strip().lower()
+        device_name = (device_name or "").strip() or None
+        if not re.fullmatch(r"![0-9a-f]{8}", device_id):
+            raise ValueError("Connected radio did not provide a valid Meshtastic node ID")
+
+        with self._lock:
+            profiles = self._load_unlocked()
+            current = profiles.get(profile_id)
+            if current is None:
+                raise KeyError(profile_id)
+            expected_id = (current.get("device_id") or "").lower() or None
+            if expected_id and expected_id != device_id and not allow_rebind:
+                raise ConnectionIdentityMismatchError(
+                    expected_id,
+                    device_id,
+                    current.get("device_name"),
+                    device_name,
+                )
+
+            timestamp = _now()
+            first_verified = current.get("identity_first_verified_at")
+            if not expected_id or expected_id != device_id:
+                first_verified = timestamp
+            profile = {
+                **current,
+                "device_id": device_id,
+                "device_name": device_name or current.get("device_name") or device_id,
+                "identity_first_verified_at": first_verified,
+                "identity_last_verified_at": timestamp,
             }
             profiles[profile_id] = profile
             self._write_unlocked(profiles)

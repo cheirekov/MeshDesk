@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import UTC, datetime
 
 from meshtastic.protobuf import channel_pb2, localonly_pb2, storeforward_pb2
 
@@ -138,6 +139,69 @@ def test_send_text_records_packet_and_event():
     )
     assert manager.events()[0]["kind"] == "outgoing"
     assert manager.events()[1]["kind"] == "delivery"
+
+
+def test_connection_health_distinguishes_manual_disconnect_and_loss():
+    manager, interface = connected_manager()
+    manager._transport = "tcp"  # noqa: SLF001
+    manager._target = "172.16.19.176:4403"  # noqa: SLF001
+    manager._connected_at = datetime.now(UTC).isoformat()  # noqa: SLF001
+
+    manager.disconnect()
+    manual = manager.status()["health"]
+    assert manual["state"] == "disconnected"
+    assert manual["reason"] == "manual"
+    assert manual["target"] == "172.16.19.176:4403"
+    assert manual["reconnect_eligible"] is False
+
+    manager._interface = interface  # noqa: SLF001
+    manager._state = "connected"  # noqa: SLF001
+    manager._transport = "tcp"  # noqa: SLF001
+    manager._target = "172.16.19.176:4403"  # noqa: SLF001
+    manager._on_connection_lost(interface)  # noqa: SLF001
+    lost = manager.status()["health"]
+    assert lost["state"] == "lost"
+    assert lost["reason"] == "connection_lost"
+    assert lost["reconnect_eligible"] is True
+
+
+def test_receive_updates_health_activity_timestamps():
+    manager, interface = connected_manager()
+    assert manager.status()["health"]["last_rx_at"] is None
+
+    manager._on_receive(  # noqa: SLF001
+        {
+            "fromId": "!87654321",
+            "toId": "^all",
+            "channel": 0,
+            "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "health"},
+        },
+        interface,
+    )
+
+    health = manager.status()["health"]
+    assert health["state"] == "healthy"
+    assert health["last_rx_at"] is not None
+    assert datetime.fromisoformat(health["last_activity_at"]) >= datetime.fromisoformat(
+        health["last_rx_at"]
+    )
+
+
+def test_connection_errors_are_classified_for_reconnect_policy():
+    assert (
+        MeshtasticManager._classify_connection_error(  # noqa: SLF001
+            TimeoutError("handshake timed out"),
+            "tcp",
+        )
+        == "timeout"
+    )
+    assert (
+        MeshtasticManager._classify_connection_error(  # noqa: SLF001
+            RuntimeError("Not paired"),
+            "ble",
+        )
+        == "pairing_required"
+    )
 
 
 def test_message_history_is_scoped_to_active_radio_profile(tmp_path):

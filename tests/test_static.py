@@ -38,7 +38,18 @@ def test_saved_connection_profiles_are_available_in_connection_panel() -> None:
     assert 'id="connectionProfile"' in page.text
     assert 'id="saveConnectionProfile"' in page.text
     assert 'id="connectionProfileModal"' in page.text
+    assert 'id="connectionIdentityStatus"' in page.text
+    assert 'id="rebindConnectionProfile"' in page.text
+    assert 'id="connectionHealthPanel"' in page.text
+    assert 'id="connectionHealthCompact"' in page.text
+    assert 'id="discoverTcpButton"' in page.text
+    assert 'id="tcpDiscoveryResults"' in page.text
+    assert 'id="tcpDiscoveryDetails"' in page.text
     assert "refreshConnectionProfiles()" in script.text
+    assert "verifySelectedConnectionProfile(status)" in script.text
+    assert "updateConnectionHealth(status)" in script.text
+    assert "discoverTcpDevices" in script.text
+    assert "matchingProfileForDiscoveredDevice" in script.text
 
 
 def test_configuration_has_contextual_guidance() -> None:

@@ -9,6 +9,7 @@ Connection profiles са първата реализация от M1. Те на�
 - transport: TCP или BLE;
 - TCP host и port, или BLE address;
 - време на създаване, промяна и последно използване.
+- потвърден Meshtastic node ID, име и време на последната identity проверка.
 
 Не се пазят Bluetooth PIN, channel PSK, Wi-Fi парола, private/admin keys или
 друга radio конфигурация.
@@ -27,14 +28,17 @@ lifecycle, а не към firmware конфигурацията на радио�
 - Ръчна промяна след избора се показва като незаписана.
 - Връзка с незаписана промяна не обновява `last_used_at` на стария профил.
 - Изтриването премахва само локалния профил; не забравя BlueZ pairing.
+- След успешния handshake профилът се свързва с node ID на радиото.
+- Следваща връзка към същия endpoint, но с различен node ID, показва mismatch и
+  не променя запазената идентичност.
+- „Приеми новото радио“ изисква отделно потвърждение и се използва само при
+  умишлена смяна на устройството или identity reset.
 
 ## Следващи зависимости
 
-Преди auto-reconnect към профила трябва да се добавят:
+Преди auto-reconnect към профила остават:
 
-1. потвърдена Meshtastic device identity след handshake;
-2. health state и причина за прекъсването;
-3. explicit opt-in за auto-reconnect;
-4. bounded exponential backoff и бутон за спиране.
+1. explicit opt-in за auto-reconnect;
+2. bounded exponential backoff и бутон за спиране.
 
 Това предотвратява reconnect loop към грешен endpoint или устройство.

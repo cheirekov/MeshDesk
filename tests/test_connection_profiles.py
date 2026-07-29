@@ -5,7 +5,10 @@ import stat
 
 import pytest
 
-from meshdesk.connection_profiles import ConnectionProfileStore
+from meshdesk.connection_profiles import (
+    ConnectionIdentityMismatchError,
+    ConnectionProfileStore,
+)
 
 
 def test_connection_profile_lifecycle_is_persistent(tmp_path):
@@ -22,6 +25,7 @@ def test_connection_profile_lifecycle_is_persistent(tmp_path):
     )
     assert store.list()[0]["id"] == created["id"]
     assert store.list()[0]["last_used_at"] is None
+    assert store.list()[0]["device_id"] is None
 
     updated = store.update(
         created["id"],
@@ -42,6 +46,41 @@ def test_connection_profile_lifecycle_is_persistent(tmp_path):
 
     store.delete(created["id"])
     assert store.list() == []
+
+
+def test_verified_identity_requires_explicit_rebind(tmp_path):
+    store = ConnectionProfileStore(tmp_path / "profiles.json")
+    profile = store.create(
+        {
+            "name": "Gateway",
+            "transport": "ble",
+            "address": "AA:BB:CC:DD:EE:FF",
+        }
+    )
+
+    verified = store.verify_identity(profile["id"], "!1234ABCD", "Gateway Node")
+    assert verified["device_id"] == "!1234abcd"
+    assert verified["device_name"] == "Gateway Node"
+    assert verified["identity_first_verified_at"]
+    first_verified = verified["identity_first_verified_at"]
+
+    verified_again = store.verify_identity(profile["id"], "!1234abcd", "Renamed Gateway")
+    assert verified_again["identity_first_verified_at"] == first_verified
+    assert verified_again["device_name"] == "Renamed Gateway"
+
+    with pytest.raises(ConnectionIdentityMismatchError) as mismatch:
+        store.verify_identity(profile["id"], "!87654321", "Replacement")
+    assert mismatch.value.expected_id == "!1234abcd"
+    assert mismatch.value.observed_id == "!87654321"
+
+    rebound = store.verify_identity(
+        profile["id"],
+        "!87654321",
+        "Replacement",
+        allow_rebind=True,
+    )
+    assert rebound["device_id"] == "!87654321"
+    assert rebound["identity_first_verified_at"] != first_verified
 
 
 def test_connection_profiles_do_not_accept_incomplete_endpoints(tmp_path):

@@ -69,6 +69,14 @@ HISTORY_EVENT_KINDS = {
     "operation_result",
     "store_forward",
 }
+TRANSPORT_ACTIVITY_EVENT_KINDS = {
+    "incoming",
+    "outgoing",
+    "delivery",
+    "operation_request",
+    "operation_result",
+    "store_forward",
+}
 OWNER_SECTION = "owner"
 DEFAULT_HISTORY_WINDOW_MINUTES = 60 * 24
 DEFAULT_HISTORY_MAX_MESSAGES = 100
@@ -119,6 +127,15 @@ class MeshtasticManager:
         self._target: str | None = None
         self._error: str | None = None
         self._connected_at: str | None = None
+        self._connect_started_at: str | None = None
+        self._last_activity_at: str | None = None
+        self._last_rx_at: str | None = None
+        self._disconnected_at: str | None = None
+        self._disconnect_reason: str | None = None
+        self._disconnect_detail: str | None = None
+        self._last_transport: str | None = None
+        self._last_target: str | None = None
+        self._last_session_started_at: str | None = None
         self._events: deque[dict[str, Any]] = deque(maxlen=event_limit)
         self._sequence = 0
         self._profile_id: str | None = None
@@ -137,11 +154,14 @@ class MeshtasticManager:
 
     def _add_event(self, kind: str, **data: Any) -> dict[str, Any]:
         with self._lock:
+            timestamp = _now()
+            if self._state == "connected" and kind in TRANSPORT_ACTIVITY_EVENT_KINDS:
+                self._last_activity_at = timestamp
             self._sequence += 1
             event = {
                 "event_id": uuid.uuid4().hex,
                 "seq": self._sequence,
-                "time": _now(),
+                "time": timestamp,
                 "kind": kind,
                 "profile_id": self._profile_id,
                 **_safe(data),
@@ -187,7 +207,7 @@ class MeshtasticManager:
         self._start_connection("ble", address, address=address)
 
     def _start_connection(self, transport: str, target: str, **params: Any) -> None:
-        self.disconnect()
+        self.disconnect(reason="switch")
         with self._lock:
             self._generation += 1
             generation = self._generation
@@ -196,6 +216,10 @@ class MeshtasticManager:
             self._target = target
             self._error = None
             self._connected_at = None
+            self._connect_started_at = _now()
+            self._disconnected_at = None
+            self._disconnect_reason = None
+            self._disconnect_detail = None
             self._profile_id = None
             self._profile_name = None
             self._remote_nodes = {}
@@ -265,6 +289,10 @@ class MeshtasticManager:
                     self._state = "connected"
                     self._error = None
                     self._connected_at = _now()
+                    self._last_activity_at = self._connected_at
+                    self._last_rx_at = None
+                    self._disconnect_reason = None
+                    self._disconnect_detail = None
                     self._profile_id = profile_id
                     self._profile_name = profile_name
                     pending_packets = [
@@ -296,15 +324,48 @@ class MeshtasticManager:
                 self._interface = None
                 self._state = "error"
                 self._error = str(exc) or type(exc).__name__
+                self._disconnected_at = _now()
+                self._disconnect_reason = self._classify_connection_error(exc, transport)
+                self._disconnect_detail = self._error
+                self._last_transport = transport
+                self._last_target = self._target
             self._add_event("error", message=self._error)
 
-    def disconnect(self) -> None:
+    @staticmethod
+    def _classify_connection_error(exc: Exception, transport: str) -> str:
+        message = str(exc).casefold()
+        if "timeout" in message or "timed out" in message:
+            return "timeout"
+        if "refused" in message:
+            return "connection_refused"
+        if "not found" in message or "no meshtastic ble peripheral" in message:
+            return "device_not_found"
+        if transport == "ble" and (
+            "authentication" in message
+            or "not paired" in message
+            or "not authorized" in message
+        ):
+            return "pairing_required"
+        return "connection_failed"
+
+    def disconnect(self, reason: str = "manual") -> None:
         with self._lock:
             self._generation += 1
             interface = self._interface
             transport = self._transport
             target = self._target
             had_connection = interface is not None or self._state in {"connecting", "connected"}
+            if had_connection:
+                self._last_transport = transport
+                self._last_target = target
+                self._last_session_started_at = self._connected_at
+                self._disconnected_at = _now()
+                self._disconnect_reason = reason
+                self._disconnect_detail = (
+                    "Connection replaced by a new endpoint"
+                    if reason == "switch"
+                    else "Disconnected by the operator"
+                )
             self._interface = None
             self._state = "disconnected"
             self._transport = None
@@ -1243,6 +1304,18 @@ class MeshtasticManager:
     def status(self) -> dict[str, Any]:
         with self._lock:
             interface = self._interface
+            if self._state == "connected":
+                health_state = "healthy"
+            elif self._state == "connecting":
+                health_state = "connecting"
+            elif self._state == "error" and self._disconnect_reason == "connection_lost":
+                health_state = "lost"
+            elif self._state == "error":
+                health_state = "failed"
+            elif self._disconnect_reason in {"manual", "switch"}:
+                health_state = "disconnected"
+            else:
+                health_state = "idle"
             result = {
                 "state": self._state,
                 "transport": self._transport,
@@ -1252,6 +1325,26 @@ class MeshtasticManager:
                 "event_sequence": self._sequence,
                 "profile_id": self._profile_id,
                 "profile_name": self._profile_name,
+                "health": {
+                    "state": health_state,
+                    "connect_started_at": self._connect_started_at,
+                    "connected_at": self._connected_at or self._last_session_started_at,
+                    "last_activity_at": self._last_activity_at,
+                    "last_rx_at": self._last_rx_at,
+                    "disconnected_at": self._disconnected_at,
+                    "reason": self._disconnect_reason,
+                    "detail": self._disconnect_detail,
+                    "transport": self._transport or self._last_transport,
+                    "target": self._target or self._last_target,
+                    "reconnect_eligible": self._disconnect_reason
+                    in {
+                        "connection_lost",
+                        "timeout",
+                        "connection_refused",
+                        "device_not_found",
+                        "connection_failed",
+                    },
+                },
             }
         if interface is not None:
             with contextlib.suppress(Exception):
@@ -1446,6 +1539,8 @@ class MeshtasticManager:
                 if self._state == "connecting" and self._interface is None:
                     self._pending_receive_packets.append((interface, packet))
                 return
+            self._last_rx_at = _now()
+            self._last_activity_at = self._last_rx_at
         decoded = packet.get("decoded") or {}
         if decoded.get("portnum") == "STORE_FORWARD_APP" and self._handle_store_forward(
             packet, decoded
@@ -1510,6 +1605,12 @@ class MeshtasticManager:
             self._interface = None
             self._state = "error"
             self._error = "Connection to the Meshtastic device was lost"
+            self._last_transport = self._transport
+            self._last_target = self._target
+            self._last_session_started_at = self._connected_at
+            self._disconnected_at = _now()
+            self._disconnect_reason = "connection_lost"
+            self._disconnect_detail = self._error
         self._add_event("error", message=self._error)
 
     def wait_until_settled(self, timeout: float = 10.0) -> str:

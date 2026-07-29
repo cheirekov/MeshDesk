@@ -19,6 +19,8 @@ const state = {
   connectionProfiles: [],
   connectionProfileDirty: false,
   connectionProfileModalId: null,
+  connectionIdentityMismatch: null,
+  discoveredTcpDevices: [],
   roleAdvisorTrigger: null,
   status: null,
   readThrough: Number(localStorage.getItem("meshdeskReadThrough") || 0) || 0,
@@ -31,6 +33,24 @@ const statusLabels = {
   connected: "Свързано",
   error: "Грешка",
 };
+const healthLabels = {
+  idle: "Няма активна сесия",
+  connecting: "Извършва се Meshtastic handshake",
+  healthy: "Transport сесията е активна",
+  lost: "Връзката беше неочаквано загубена",
+  failed: "Свързването не успя",
+  disconnected: "Връзката е прекъсната",
+};
+const disconnectReasonLabels = {
+  manual: "Прекъснато от оператора",
+  switch: "Endpoint-ът е сменен",
+  timeout: "Изтече времето за свързване или handshake",
+  connection_refused: "TCP endpoint-ът отказа връзката",
+  device_not_found: "Устройството не е намерено или не рекламира",
+  pairing_required: "Bluetooth сдвояването липсва или не е разрешено",
+  connection_failed: "Transport-ът не успя да установи сесия",
+  connection_lost: "Активната transport сесия беше прекъсната",
+};
 
 function organizeWorkspace() {
   const configuration = $("#configPanel");
@@ -38,6 +58,30 @@ function organizeWorkspace() {
   if (configuration && administration) {
     administration.parentElement.insertBefore(configuration, administration);
   }
+}
+
+function relativeTime(value) {
+  if (!value) return "—";
+  const timestamp = new Date(value);
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp.getTime()) / 1000));
+  let relative;
+  if (seconds < 10) relative = "преди малко";
+  else if (seconds < 60) relative = `преди ${seconds} сек`;
+  else if (seconds < 3600) relative = `преди ${Math.floor(seconds / 60)} мин`;
+  else if (seconds < 86400) relative = `преди ${Math.floor(seconds / 3600)} ч`;
+  else relative = `преди ${Math.floor(seconds / 86400)} дни`;
+  return `${timestamp.toLocaleString()} · ${relative}`;
+}
+
+function elapsedTime(value) {
+  if (!value) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
+  if (seconds < 60) return `${seconds} сек`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} мин`;
+  if (seconds < 86400) {
+    return `${Math.floor(seconds / 3600)} ч ${Math.floor((seconds % 3600) / 60)} мин`;
+  }
+  return `${Math.floor(seconds / 86400)} дни`;
 }
 
 const roleGuidance = {
@@ -147,7 +191,17 @@ async function api(path, options = {}) {
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
-  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const detail = data.detail;
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail?.message || `HTTP ${response.status}`;
+    const error = new Error(message);
+    error.details = detail;
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -167,10 +221,125 @@ function setTransport(transport) {
   $("#tcpFields").classList.toggle("hidden", transport !== "tcp");
   $("#bleFields").classList.toggle("hidden", transport !== "ble");
   $("#pairingBox").classList.toggle("hidden", transport !== "ble");
+  $("#tcpDiscoveryResults").classList.toggle(
+    "hidden",
+    transport !== "tcp" || !state.discoveredTcpDevices.length,
+  );
   $("#connectionDetail").textContent =
     transport === "tcp"
       ? "Нативен Meshtastic TCP порт 4403 — без HTTP/CORS."
       : "Bluetooth се обслужва от Linux BlueZ — без Web Bluetooth.";
+}
+
+async function discoverTcpDevices() {
+  const button = $("#discoverTcpButton");
+  button.disabled = true;
+  button.textContent = "Откриване…";
+  try {
+    const result = await api("/api/discovery/tcp?timeout=3");
+    state.discoveredTcpDevices = result.devices || [];
+    const select = $("#tcpDiscoveredDevice");
+    select.innerHTML = "";
+    state.discoveredTcpDevices.forEach((device, index) => {
+      const hostname = device.hostname ? ` · ${device.hostname}` : "";
+      const identity = [device.short_name, device.node_id].filter(Boolean).join(" · ");
+      select.add(
+        new Option(
+          `${device.name} · ${device.host}:${device.port}` +
+            `${identity ? ` · ${identity}` : ""}${hostname}`,
+          String(index),
+        ),
+      );
+    });
+    $("#tcpDiscoveryResults").classList.toggle(
+      "hidden",
+      !state.discoveredTcpDevices.length || state.transport !== "tcp",
+    );
+    if (state.discoveredTcpDevices.length) {
+      renderTcpDiscoveryDetails();
+      toast(`Открити TCP устройства: ${state.discoveredTcpDevices.length}`);
+    } else {
+      toast("Не е намерено Meshtastic TCP устройство чрез mDNS", true);
+    }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Открий";
+  }
+}
+
+function matchingProfileForDiscoveredDevice(device) {
+  const endpoints = new Set(
+    [device.host, device.hostname, ...(device.addresses || [])]
+      .filter(Boolean)
+      .map((value) => String(value).toLocaleLowerCase()),
+  );
+  return (
+    state.connectionProfiles.find(
+      (profile) =>
+        profile.transport === "tcp" &&
+        ((profile.device_id &&
+          device.node_id &&
+          profile.device_id.toLocaleLowerCase() === device.node_id.toLocaleLowerCase()) ||
+          (Number(profile.port) === Number(device.port) &&
+            endpoints.has(String(profile.host).toLocaleLowerCase()))),
+    ) || null
+  );
+}
+
+function renderTcpDiscoveryDetails() {
+  const container = $("#tcpDiscoveryDetails");
+  const device = state.discoveredTcpDevices[Number($("#tcpDiscoveredDevice").value)];
+  if (!device) {
+    container.innerHTML = "";
+    return;
+  }
+  const profile = matchingProfileForDiscoveredDevice(device);
+  const txt = Object.entries(device.properties || {})
+    .map(([key, value]) => `${key}=${value || "—"}`)
+    .join(" · ");
+  const discoveredName = device.short_name
+    ? `${device.name} · ${device.short_name}`
+    : device.name;
+  const nodeId = profile?.device_id || device.node_id;
+  container.innerHTML = `
+    <div class="tcp-discovery-identity">
+      <div>
+        <span>${profile?.device_id ? "ПОТВЪРДЕН ПРОФИЛ" : "mDNS ИДЕНТИЧНОСТ"}</span>
+        <strong>${escapeHtml(
+          profile?.device_name || profile?.name || discoveredName,
+        )}</strong>
+      </div>
+      ${
+        nodeId
+          ? `<code>${escapeHtml(nodeId)}</code>`
+          : "<em>Името на радиото ще се потвърди след свързване</em>"
+      }
+    </div>
+    <dl>
+      <div><dt>IP адрес</dt><dd>${escapeHtml((device.addresses || []).join(", ") || device.host)}</dd></div>
+      <div><dt>Hostname</dt><dd>${escapeHtml(device.hostname || "не е публикуван")}</dd></div>
+      <div><dt>TCP порт</dt><dd>${escapeHtml(device.port)}</dd></div>
+      <div><dt>MAC / neighbor</dt><dd>${escapeHtml(
+        device.mac || "не е наличен",
+      )}</dd></div>
+      <div><dt>Node ID</dt><dd>${escapeHtml(device.node_id || "не е публикуван")}</dd></div>
+      <div><dt>Short name</dt><dd>${escapeHtml(device.short_name || "не е публикуван")}</dd></div>
+      <div><dt>Platform</dt><dd>${escapeHtml(device.platform || "не е публикувана")}</dd></div>
+      <div><dt>mDNS service</dt><dd>${escapeHtml(device.name)}</dd></div>
+      <div><dt>TXT metadata</dt><dd>${escapeHtml(txt || "няма публикувани TXT полета")}</dd></div>
+    </dl>`;
+}
+
+function useDiscoveredTcpDevice() {
+  const index = Number($("#tcpDiscoveredDevice").value);
+  const device = state.discoveredTcpDevices[index];
+  if (!device) return;
+  $("#tcpHost").value = device.host;
+  $("#tcpPort").value = device.port;
+  markConnectionProfileDirty();
+  toast(`Избран endpoint: ${device.host}:${device.port}`);
 }
 
 function connectionValues() {
@@ -202,11 +371,15 @@ function selectedConnectionProfile() {
 
 function updateConnectionProfileUi() {
   const profile = selectedConnectionProfile();
+  const identity = $("#connectionIdentityStatus");
+  const rebind = $("#rebindConnectionProfile");
   $("#saveConnectionProfile").textContent = profile ? "Обнови профила" : "Запази като профил";
   $("#deleteConnectionProfile").classList.toggle("hidden", !profile);
   if (!profile) {
     $("#connectionProfileHint").textContent =
       "Профилите пазят само адреса и транспорта локално — без PIN, PSK или ключове.";
+    identity.className = "connection-identity-status hidden";
+    rebind.classList.add("hidden");
     return;
   }
   const modified = state.connectionProfileDirty ? " · има незаписани промени" : "";
@@ -215,6 +388,34 @@ function updateConnectionProfileUi() {
     : "никога";
   $("#connectionProfileHint").textContent =
     `${connectionTarget(profile)}${modified}. Последно използван: ${lastUsed}`;
+  if (state.connectionIdentityMismatch) {
+    const mismatch = state.connectionIdentityMismatch;
+    identity.className = "connection-identity-status mismatch";
+    $("#connectionIdentityTitle").textContent = "Свързано е различно радио";
+    $("#connectionIdentityDetail").textContent =
+      `Очаквано: ${mismatch.expected_name || mismatch.expected_id} · ` +
+      `открито: ${mismatch.observed_name || mismatch.observed_id}.`;
+    rebind.classList.remove("hidden");
+  } else if (profile.device_id) {
+    identity.className = `connection-identity-status verified${
+      state.connectionProfileDirty ? " modified" : ""
+    }`;
+    $("#connectionIdentityTitle").textContent = state.connectionProfileDirty
+      ? "Запазената идентичност е за стария endpoint"
+      : "Потвърдено Meshtastic устройство";
+    $("#connectionIdentityDetail").textContent =
+      `${profile.device_name || profile.device_id} · ${profile.device_id}` +
+      (profile.identity_last_verified_at
+        ? ` · проверено ${new Date(profile.identity_last_verified_at).toLocaleString()}`
+        : "");
+    rebind.classList.add("hidden");
+  } else {
+    identity.className = "connection-identity-status pending";
+    $("#connectionIdentityTitle").textContent = "Идентичността още не е потвърдена";
+    $("#connectionIdentityDetail").textContent =
+      "Ще бъде записана автоматично след успешния Meshtastic handshake.";
+    rebind.classList.add("hidden");
+  }
 }
 
 function renderConnectionProfiles(selectedId = "") {
@@ -230,11 +431,13 @@ function renderConnectionProfiles(selectedId = "") {
     ? activeId
     : "";
   updateConnectionProfileUi();
+  if (state.discoveredTcpDevices.length) renderTcpDiscoveryDetails();
 }
 
 function applyConnectionProfile() {
   const profile = selectedConnectionProfile();
   state.connectionProfileDirty = false;
+  state.connectionIdentityMismatch = null;
   if (!profile) {
     updateConnectionProfileUi();
     return;
@@ -256,6 +459,7 @@ function applyConnectionProfile() {
 function markConnectionProfileDirty() {
   if (!selectedConnectionProfile()) return;
   state.connectionProfileDirty = true;
+  state.connectionIdentityMismatch = null;
   updateConnectionProfileUi();
 }
 
@@ -331,11 +535,62 @@ async function deleteConnectionProfile() {
       method: "DELETE",
     });
     state.connectionProfileDirty = false;
+    state.connectionIdentityMismatch = null;
     await refreshConnectionProfiles();
     toast("Профилът е изтрит");
   } catch (error) {
     toast(error.message, true);
   }
+}
+
+async function verifySelectedConnectionProfile(status, allowRebind = false) {
+  const profile = selectedConnectionProfile();
+  if (
+    !profile ||
+    state.connectionProfileDirty ||
+    status?.state !== "connected" ||
+    !status.profile_id
+  ) {
+    return;
+  }
+  try {
+    const result = await api(
+      `/api/connection-profiles/${encodeURIComponent(profile.id)}/verify`,
+      {
+        method: "POST",
+        body: JSON.stringify({ allow_rebind: allowRebind }),
+      },
+    );
+    state.connectionProfiles = state.connectionProfiles.map((item) =>
+      item.id === result.profile.id ? result.profile : item,
+    );
+    state.connectionIdentityMismatch = null;
+    renderConnectionProfiles(result.profile.id);
+    if (allowRebind) toast("Профилът е свързан с новото радио");
+  } catch (error) {
+    if (error.details?.code === "identity_mismatch") {
+      state.connectionIdentityMismatch = error.details;
+      updateConnectionProfileUi();
+      toast("Профилът очаква друго Meshtastic устройство", true);
+      return;
+    }
+    toast(`Идентичността не може да бъде проверена: ${error.message}`, true);
+  }
+}
+
+async function rebindConnectionProfile() {
+  const mismatch = state.connectionIdentityMismatch;
+  if (!mismatch || !state.status) return;
+  const observed = mismatch.observed_name || mismatch.observed_id;
+  if (
+    !confirm(
+      `Профилът ще бъде свързан с „${observed}“. ` +
+        "Направи това само ако устройството е сменено умишлено. Да продължа ли?",
+    )
+  ) {
+    return;
+  }
+  await verifySelectedConnectionProfile(state.status, true);
 }
 
 function updateControls(status) {
@@ -385,9 +640,60 @@ function updateControls(status) {
     button.disabled = !connected;
   });
   $("#localPublicKey").textContent = status.public_key || "—";
+  updateConnectionHealth(status);
   updateByteCount();
   if (status.error && status.error !== state.lastError) toast(status.error, true);
   state.lastError = status.error;
+}
+
+function updateConnectionHealth(status) {
+  const health = status.health || {
+    state:
+      status.state === "connected"
+        ? "healthy"
+        : status.state === "connecting"
+          ? "connecting"
+          : status.state === "error"
+            ? "failed"
+            : "idle",
+    connected_at: status.connected_at,
+    detail: status.error,
+    transport: status.transport,
+    target: status.target,
+  };
+  const panel = $("#connectionHealthPanel");
+  const visible = health.state !== "idle" || Boolean(health.target);
+  panel.className = `connection-health-panel ${health.state}${
+    visible ? "" : " hidden"
+  }`;
+  $("#connectionHealthDot").className = `connection-health-dot ${health.state}`;
+  $("#connectionHealthTitle").textContent =
+    healthLabels[health.state] || health.state;
+  const reason =
+    disconnectReasonLabels[health.reason] ||
+    health.detail ||
+    (health.state === "healthy"
+      ? `Активна от ${elapsedTime(health.connected_at)}`
+      : "");
+  $("#connectionHealthReason").textContent = reason;
+  $("#healthTarget").textContent = [health.transport?.toUpperCase(), health.target]
+    .filter(Boolean)
+    .join(" · ") || "—";
+  $("#healthConnectedAt").textContent = relativeTime(
+    health.connected_at || health.connect_started_at,
+  );
+  $("#healthLastActivity").textContent = relativeTime(health.last_activity_at);
+  $("#healthLastRx").textContent = relativeTime(health.last_rx_at);
+  $("#healthDisconnectedAt").textContent = relativeTime(health.disconnected_at);
+  $("#healthReconnectPolicy").textContent = health.reconnect_eligible
+    ? "Допустим след изрично включване"
+    : "Не е допустим за това състояние";
+  $("#connectionHealthCompact").textContent =
+    health.state === "healthy"
+      ? `активна ${elapsedTime(health.connected_at)}`
+      : health.state === "connecting"
+        ? "handshake…"
+        : healthLabels[health.state] || health.state;
 }
 
 async function refreshStatus() {
@@ -410,6 +716,7 @@ async function refreshStatus() {
     updateControls(status);
     if (!wasConnected && status.state === "connected") {
       toast(`Свързано: ${status.target}`);
+      await verifySelectedConnectionProfile(status);
       await Promise.all([refreshNodes(), refreshChannels(), refreshConfig()]);
     }
   } catch (error) {
@@ -2260,6 +2567,7 @@ $("#connectionToggle").addEventListener("click", () => {
 $("#connectionProfile").addEventListener("change", applyConnectionProfile);
 $("#saveConnectionProfile").addEventListener("click", openConnectionProfileModal);
 $("#deleteConnectionProfile").addEventListener("click", deleteConnectionProfile);
+$("#rebindConnectionProfile").addEventListener("click", rebindConnectionProfile);
 $("#cancelConnectionProfile").addEventListener("click", closeConnectionProfileModal);
 $("#confirmConnectionProfile").addEventListener("click", saveConnectionProfile);
 $("#connectionProfileName").addEventListener("keydown", (event) => {
@@ -2268,6 +2576,9 @@ $("#connectionProfileName").addEventListener("keydown", (event) => {
 $("#connectionProfileModal").addEventListener("click", (event) => {
   if (event.target === $("#connectionProfileModal")) closeConnectionProfileModal();
 });
+$("#discoverTcpButton").addEventListener("click", discoverTcpDevices);
+$("#useDiscoveredTcp").addEventListener("click", useDiscoveredTcpDevice);
+$("#tcpDiscoveredDevice").addEventListener("change", renderTcpDiscoveryDetails);
 ["#tcpHost", "#tcpPort", "#bleDevice"].forEach((selector) => {
   $(selector).addEventListener("input", markConnectionProfileDirty);
   $(selector).addEventListener("change", markConnectionProfileDirty);
