@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 
-from meshtastic.protobuf import channel_pb2, localonly_pb2
+from meshtastic.protobuf import channel_pb2, localonly_pb2, storeforward_pb2
 
 from meshdesk.history import EncryptedHistory
 from meshdesk.manager import MeshtasticManager
@@ -15,6 +15,7 @@ class FakeLocalNode:
         self.moduleConfig = localonly_pb2.LocalModuleConfig()
         self.channels = []
         self.written = []
+        self.owner_updates = []
 
     def writeConfig(self, section):
         self.written.append(section)
@@ -22,6 +23,38 @@ class FakeLocalNode:
     def setFavorite(self, node_id):
         self.written.append(("favorite", node_id))
         return {"id": 85}
+
+    def removeFavorite(self, node_id):
+        self.written.append(("unfavorite", node_id))
+        return {"id": 86}
+
+    def setIgnored(self, node_id):
+        self.written.append(("ignore", node_id))
+        return {"id": 87}
+
+    def removeIgnored(self, node_id):
+        self.written.append(("unignore", node_id))
+        return {"id": 88}
+
+    def setOwner(self, **values):
+        self.owner_updates.append(values)
+        return {"id": 89}
+
+    def reboot(self, secs):
+        self.written.append(("reboot", secs))
+        return {"id": 90}
+
+    def shutdown(self, secs):
+        self.written.append(("shutdown", secs))
+        return {"id": 91}
+
+    def factoryReset(self, full):
+        self.written.append(("factory_reset", full))
+        return {"id": 92}
+
+    def resetNodeDb(self):
+        self.written.append(("reset_nodedb",))
+        return {"id": 93}
 
 
 class FakeInterface:
@@ -46,6 +79,8 @@ class FakeInterface:
         }
         self.sent = []
         self.sent_data = []
+        self.remote_node = FakeLocalNode()
+        self.ack_waits = 0
 
     def getMyNodeInfo(self):
         return next(iter(self.nodes.values()))
@@ -57,6 +92,12 @@ class FakeInterface:
     def sendData(self, payload, **kwargs):
         self.sent_data.append((payload, kwargs))
         return {"id": 84}
+
+    def getNode(self, node_id, requestChannels=False, timeout=45):
+        return self.remote_node
+
+    def waitForAckNak(self):
+        self.ack_waits += 1
 
     def close(self):
         return None
@@ -272,3 +313,134 @@ def test_safe_config_export_and_import_omit_secrets():
     )
     assert result == {"written": ["bluetooth"]}
     assert interface.localNode.localConfig.bluetooth.enabled is False
+
+
+def test_owner_section_updates_long_and_short_name():
+    manager, interface = connected_manager()
+    owner = manager.config()["sections"][0]
+    assert owner["name"] == "owner"
+    values = {field["name"]: field["value"] for field in owner["fields"]}
+    assert values["long_name"] == "Test Node"
+    assert values["short_name"] == "TEST"
+
+    manager.update_config(
+        "owner",
+        {"long_name": "Base Station", "short_name": "BASE"},
+    )
+    assert interface.localNode.owner_updates == [
+        {
+            "long_name": "Base Station",
+            "short_name": "BASE",
+            "is_licensed": False,
+            "is_unmessagable": False,
+        }
+    ]
+
+
+def test_remote_nodedb_preference_uses_managed_remote_node():
+    manager, interface = connected_manager()
+    manager.request_node_action(
+        "!12345678",
+        "ignore",
+        managed_node_id="!87654321",
+    )
+    assert interface.localNode.written == []
+    assert interface.remote_node.written == [("ignore", "!12345678")]
+    assert interface.ack_waits == 1
+
+
+def test_history_replay_matches_android_client_request():
+    manager, interface = connected_manager()
+    manager._profile_id = "!12345678"  # noqa: SLF001
+    packet = manager.request_history_replay(120, 25)
+    assert packet == {"id": 84}
+    payload, kwargs = interface.sent_data[0]
+    assert isinstance(payload, storeforward_pb2.StoreAndForward)
+    assert payload.rr == storeforward_pb2.StoreAndForward.CLIENT_HISTORY
+    assert payload.history.window == 120
+    assert payload.history.history_messages == 25
+    assert payload.history.last_request == 0
+    assert kwargs["destinationId"] == "!12345678"
+    assert kwargs["wantAck"] is False
+
+
+def test_store_forward_text_becomes_recovered_chat_message():
+    manager, interface = connected_manager()
+    replay = storeforward_pb2.StoreAndForward(
+        rr=storeforward_pb2.StoreAndForward.ROUTER_TEXT_BROADCAST,
+        text=b"missed hello",
+    )
+    manager._on_receive(  # noqa: SLF001
+        {
+            "fromId": "!12345678",
+            "toId": "!ffffffff",
+            "channel": 2,
+            "decoded": {
+                "portnum": "STORE_FORWARD_APP",
+                "storeforward": {"rr": "ROUTER_TEXT_BROADCAST", "raw": replay},
+            },
+        },
+        interface,
+    )
+    event = manager.events()[0]
+    assert event["kind"] == "incoming"
+    assert event["text"] == "missed hello"
+    assert event["conversation"] == "channel:2"
+    assert event["recovered"] is True
+
+
+def test_history_status_marks_following_local_text_as_recovered():
+    manager, interface = connected_manager()
+    manager._history_replay_requested_at = 1_700_000_100  # noqa: SLF001
+    history = storeforward_pb2.StoreAndForward(
+        rr=storeforward_pb2.StoreAndForward.ROUTER_HISTORY,
+        history=storeforward_pb2.StoreAndForward.History(
+            history_messages=1,
+            last_request=12,
+        ),
+    )
+    manager._on_receive(  # noqa: SLF001
+        {
+            "fromId": "!12345678",
+            "decoded": {
+                "portnum": "STORE_FORWARD_APP",
+                "storeforward": {"rr": "ROUTER_HISTORY", "raw": history},
+            },
+        },
+        interface,
+    )
+    manager._on_receive(  # noqa: SLF001
+        {
+            "fromId": "!87654321",
+            "toId": "^all",
+            "rxTime": 1_700_000_000,
+            "channel": 0,
+            "decoded": {
+                "portnum": "TEXT_MESSAGE_APP",
+                "text": "local replay",
+            },
+        },
+        interface,
+    )
+    event = manager.events()[1]
+    assert event["text"] == "local replay"
+    assert event["recovered"] is True
+
+
+def test_packets_arriving_during_handshake_are_buffered():
+    manager = MeshtasticManager()
+    interface = FakeInterface()
+    manager._state = "connecting"  # noqa: SLF001
+    packet = {
+        "fromId": "!12345678",
+        "toId": "^all",
+        "decoded": {"portnum": "TEXT_MESSAGE_APP", "text": "handshake backlog"},
+    }
+    manager._on_receive(packet, interface)  # noqa: SLF001
+    assert manager.events() == []
+    assert manager._pending_receive_packets == [(interface, packet)]  # noqa: SLF001
+
+    manager._interface = interface  # noqa: SLF001
+    manager._state = "connected"  # noqa: SLF001
+    manager._on_receive(packet, interface)  # noqa: SLF001
+    assert manager.events()[0]["text"] == "handshake backlog"

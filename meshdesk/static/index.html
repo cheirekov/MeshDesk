@@ -116,8 +116,14 @@
                 <h2 id="chatTitle">Избери разговор</h2>
                 <p id="chatSubtitle">Свържи радио, за да четеш и изпращаш съобщения.</p>
               </div>
-              <button id="markConversationRead" type="button" class="ghost"
-                title="Маркирай разговора като прочетен">Прочетено</button>
+              <div class="chat-header-actions">
+                <button id="syncHistory" type="button" class="ghost" disabled
+                  title="Поискай съобщенията, натрупани в радиото">
+                  ↻ Синхронизирай
+                </button>
+                <button id="markConversationRead" type="button" class="ghost"
+                  title="Маркирай разговора като прочетен">Прочетено</button>
+              </div>
             </div>
 
             <div id="chatMessages" class="chat-messages empty-state">
@@ -199,6 +205,119 @@
           <button id="clearEvents" type="button" class="ghost">Изчисти</button>
         </div>
         <div id="events" class="events empty-state">Все още няма събития.</div>
+      </details>
+
+      <details id="guidancePanel" class="panel guidance-panel">
+        <summary>
+          <div>
+            <p class="eyebrow">ROLE ADVISOR</p>
+            <h2>Практически профили и препоръки</h2>
+          </div>
+          <span class="details-hint">Покажи</span>
+        </summary>
+        <div class="guidance-panel-body">
+          <div class="guidance-intro">
+            <div>
+              <strong>Изборът на role е инфраструктурно решение</strong>
+              <p>
+                CLIENT е правилният default за повечето устройства. Router ролите
+                не компенсират лошо разположение и могат да увеличат airtime и
+                collisions, ако се използват масово.
+              </p>
+            </div>
+            <span class="guidance-readonly">ИНФОРМАТИВНО · НЕ ПРИЛАГА ПРОМЕНИ</span>
+          </div>
+          <div id="roleAdvisorCards" class="role-advisor-grid"></div>
+          <div class="guidance-principles">
+            <strong>Общи безопасни основи</strong>
+            <ul>
+              <li>Region се задава според физическото местоположение и регулацията.</li>
+              <li>Всички участници трябва да използват съвместим modem preset и channel.</li>
+              <li>Hop limit 3 е разумна начална стойност; повече не винаги е по-добре.</li>
+              <li>Променяй първо един canary node и наблюдавай utilization и reachability.</li>
+            </ul>
+          </div>
+        </div>
+      </details>
+
+      <details id="adminPanel" class="panel admin-panel">
+        <summary>
+          <div>
+            <p class="eyebrow">АДМИНИСТРАЦИЯ</p>
+            <h2>Управление и възстановяване</h2>
+          </div>
+          <span class="details-hint">Покажи</span>
+        </summary>
+        <div class="admin-panel-body">
+          <div class="admin-toolbar">
+            <label>
+              Управлявано устройство
+              <select id="adminTarget" disabled>
+                <option value="">Локално радио</option>
+              </select>
+            </label>
+            <div id="adminTargetHint" class="admin-target-hint">
+              Командите се изпращат към директно свързаното радио.
+            </div>
+          </div>
+
+          <div class="admin-grid">
+            <article class="admin-card">
+              <div>
+                <h3>Рестартиране</h3>
+                <p>Радиото ще се рестартира след 10 секунди. Настройките се запазват.</p>
+              </div>
+              <button type="button" class="secondary admin-action"
+                data-admin-action="reboot">Рестартирай</button>
+            </article>
+
+            <article class="admin-card">
+              <div>
+                <h3>Изключване</h3>
+                <p>Поддържа се само от устройства, които могат да се изключат софтуерно.</p>
+              </div>
+              <button type="button" class="secondary admin-action"
+                data-admin-action="shutdown">Изключи</button>
+            </article>
+
+            <article class="admin-card admin-card-wide">
+              <div>
+                <h3>Изчистване на NodeDB</h3>
+                <p>Премахва научените възли. При локалното радио MeshDesk може да
+                  възстанови списъците с любими и игнорирани.</p>
+                <label class="checkbox admin-preserve">
+                  <input id="preserveNodePreferences" type="checkbox" checked>
+                  Запази любими и игнорирани възли
+                </label>
+                <p id="preserveNodePreferencesHint" class="admin-inline-note"></p>
+              </div>
+              <button type="button" class="danger-outline admin-action"
+                data-admin-action="reset_nodedb">Изчисти NodeDB</button>
+            </article>
+
+            <article class="admin-card danger-zone">
+              <div>
+                <h3>Нулиране на настройките</h3>
+                <p>Връща конфигурацията към фабричните стойности.</p>
+              </div>
+              <button type="button" class="danger-outline admin-action"
+                data-admin-action="factory_reset_config">Нулирай конфигурацията</button>
+            </article>
+
+            <article class="admin-card danger-zone">
+              <div>
+                <h3>Пълно фабрично нулиране</h3>
+                <p>Изтрива конфигурацията и данните на устройството. Операцията е необратима.</p>
+              </div>
+              <button type="button" class="danger admin-action"
+                data-admin-action="factory_reset_device">Пълно нулиране</button>
+            </article>
+          </div>
+          <div class="config-warning">
+            Remote командите използват PKI администрация. Публичният ключ на локалното
+            радио трябва предварително да е разрешен на отдалечения възел.
+          </div>
+        </div>
       </details>
 
       <details id="configPanel" class="panel config-panel">

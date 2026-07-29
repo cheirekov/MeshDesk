@@ -13,7 +13,12 @@ from typing import Any
 
 from google.protobuf.json_format import MessageToDict, ParseDict
 from google.protobuf.message import Message
-from meshtastic.protobuf import mesh_pb2, portnums_pb2, telemetry_pb2
+from meshtastic.protobuf import (
+    mesh_pb2,
+    portnums_pb2,
+    storeforward_pb2,
+    telemetry_pb2,
+)
 from pubsub import pub
 
 from meshdesk.history import EncryptedHistory
@@ -62,7 +67,11 @@ HISTORY_EVENT_KINDS = {
     "delivery",
     "operation_request",
     "operation_result",
+    "store_forward",
 }
+OWNER_SECTION = "owner"
+DEFAULT_HISTORY_WINDOW_MINUTES = 60 * 24
+DEFAULT_HISTORY_MAX_MESSAGES = 100
 
 
 def _now() -> str:
@@ -118,6 +127,9 @@ class MeshtasticManager:
         self._history_directory = Path(history_directory)
         self._remote_nodes: dict[str, Any] = {}
         self._remote_loaded_sections: dict[str, set[str]] = {}
+        self._history_replay_requested_at: int | None = None
+        self._history_replay_remaining = 0
+        self._pending_receive_packets: list[tuple[Any, dict[str, Any]]] = []
         self.pairer = BluetoothPairer()
 
         pub.subscribe(self._on_receive, "meshtastic.receive")
@@ -188,6 +200,9 @@ class MeshtasticManager:
             self._profile_name = None
             self._remote_nodes = {}
             self._remote_loaded_sections = {}
+            self._history_replay_requested_at = None
+            self._history_replay_remaining = 0
+            self._pending_receive_packets = []
         self._add_event("status", message=f"Connecting via {transport.upper()} to {target}")
         threading.Thread(
             target=self._connect_worker,
@@ -252,10 +267,24 @@ class MeshtasticManager:
                     self._connected_at = _now()
                     self._profile_id = profile_id
                     self._profile_name = profile_name
+                    pending_packets = [
+                        packet
+                        for pending_interface, packet in self._pending_receive_packets
+                        if pending_interface is interface
+                    ]
+                    self._pending_receive_packets = []
             if stale:
                 interface.close()
                 return
             self._add_event("status", message="Connected and node database loaded")
+            for pending_packet in pending_packets:
+                self._on_receive(pending_packet, interface)
+            threading.Thread(
+                target=self._history_replay_after_connect,
+                args=(generation, interface),
+                name="meshdesk-history-replay",
+                daemon=True,
+            ).start()
         except Exception as exc:  # Hardware/network errors vary by platform.
             logger.exception("Meshtastic connection failed")
             if interface is not None:
@@ -413,6 +442,20 @@ class MeshtasticManager:
                 raise RuntimeError("Not connected to a Meshtastic device")
             return interface
 
+    def _managed_node(self, node_id: str | None = None) -> Any:
+        interface = self._connected_interface()
+        if not node_id:
+            return interface.localNode
+        node_id = self._validate_node_destination(node_id).lower()
+        with self._lock:
+            remote = self._remote_nodes.get(node_id)
+        if remote is None:
+            remote = interface.getNode(node_id, requestChannels=False, timeout=45)
+            with self._lock:
+                if interface is self._interface:
+                    self._remote_nodes[node_id] = remote
+        return remote
+
     @staticmethod
     def _operation_error(packet: dict[str, Any]) -> str | None:
         decoded = packet.get("decoded") or {}
@@ -503,6 +546,7 @@ class MeshtasticManager:
         channel: int = 0,
         telemetry_type: str = "device",
         hop_limit: int | None = None,
+        managed_node_id: str | None = None,
     ) -> dict[str, Any]:
         node_id = self._validate_node_destination(node_id)
         if not 0 <= channel <= 7:
@@ -531,13 +575,23 @@ class MeshtasticManager:
             "unignore": "removeIgnored",
         }
         if action in management_methods:
+            managed_node_id = (
+                self._validate_node_destination(managed_node_id).lower()
+                if managed_node_id
+                else None
+            )
+            managed_node = self._managed_node(managed_node_id)
             with self._command_lock:
-                packet = getattr(interface.localNode, management_methods[action])(node_id)
+                packet = getattr(managed_node, management_methods[action])(node_id)
+                if managed_node_id:
+                    interface.waitForAckNak()
             safe_packet = _safe(packet)
             self._add_event(
                 "operation_result",
                 operation=action,
                 target=node_id,
+                managed_node=managed_node_id or self._profile_id,
+                remote=bool(managed_node_id),
                 success=True,
                 result={"updated": True},
                 packet=safe_packet,
@@ -592,6 +646,70 @@ class MeshtasticManager:
             packet=safe_packet,
         )
         return safe_packet
+
+    def _owner_values(self, node_id: str | None = None) -> dict[str, Any]:
+        interface = self._connected_interface()
+        if node_id:
+            target = self._validate_node_destination(node_id).lower()
+            records = list((interface.nodes or {}).values())
+            record = next(
+                (
+                    _safe(item)
+                    for item in records
+                    if str((_safe(item).get("user") or {}).get("id", "")).lower()
+                    == target
+                ),
+                {},
+            )
+        else:
+            record = _safe(interface.getMyNodeInfo()) or {}
+        user = record.get("user") or {}
+        return {
+            "long_name": _pick(user, "longName", "long_name", default=""),
+            "short_name": _pick(user, "shortName", "short_name", default=""),
+            "is_licensed": bool(
+                _pick(user, "isLicensed", "is_licensed", default=False)
+            ),
+            "is_unmessagable": bool(
+                _pick(
+                    user,
+                    "isUnmessagable",
+                    "is_unmessagable",
+                    default=False,
+                )
+            ),
+        }
+
+    def _owner_section(self, node_id: str | None = None) -> dict[str, Any]:
+        values = self._owner_values(node_id)
+        definitions = [
+            ("long_name", "Дълго име", "string"),
+            ("short_name", "Кратко име (до 4 знака)", "string"),
+            ("is_licensed", "Лицензиран радиолюбител", "bool"),
+            (
+                "is_unmessagable",
+                "Да не приема лични съобщения",
+                "bool",
+            ),
+        ]
+        return {
+            "name": OWNER_SECTION,
+            "label": "Потребител / име",
+            "kind": "owner",
+            "fields": [
+                {
+                    "name": name,
+                    "label": label,
+                    "type": field_type,
+                    "value": values[name],
+                    "enum_values": [],
+                    "repeated": False,
+                    "secret": False,
+                    "read_only": False,
+                }
+                for name, label, field_type in definitions
+            ],
+        }
 
     def _config_sections(
         self,
@@ -678,13 +796,14 @@ class MeshtasticManager:
                 node_id = self._validate_node_destination(node_id).lower()
                 local_node = self._remote_nodes.get(node_id)
                 loaded = self._remote_loaded_sections.get(node_id, set()).copy()
-                if local_node is None:
-                    return {"sections": [], "node_id": node_id, "remote": True}
             else:
                 local_node = interface.localNode
                 loaded = None
+        sections = [self._owner_section(node_id)]
+        if local_node is not None:
+            sections.extend(self._config_sections(local_node, loaded))
         return {
-            "sections": self._config_sections(local_node, loaded),
+            "sections": sections,
             "node_id": node_id or self._profile_id,
             "remote": bool(node_id),
         }
@@ -695,8 +814,15 @@ class MeshtasticManager:
         values: dict[str, Any],
         node_id: str | None = None,
     ) -> None:
-        if section not in LOCAL_CONFIGS and section not in MODULE_CONFIGS:
+        if (
+            section != OWNER_SECTION
+            and section not in LOCAL_CONFIGS
+            and section not in MODULE_CONFIGS
+        ):
             raise ValueError("Unknown configuration section")
+        if section == OWNER_SECTION:
+            self._update_owner(values, node_id)
+            return
         with self._lock:
             interface = self._interface
             if self._state != "connected" or interface is None:
@@ -743,9 +869,53 @@ class MeshtasticManager:
         with self._command_lock:
             target.CopyFrom(candidate)
             local_node.writeConfig(section)
+            if node_id:
+                interface.waitForAckNak()
         self._add_event(
             "config",
             message=f"Configuration section '{section}' written",
+            node_id=node_id or self._profile_id,
+            remote=bool(node_id),
+        )
+
+    def _update_owner(
+        self,
+        values: dict[str, Any],
+        node_id: str | None = None,
+    ) -> None:
+        allowed = {
+            "long_name",
+            "short_name",
+            "is_licensed",
+            "is_unmessagable",
+        }
+        unknown = set(values) - allowed
+        if unknown:
+            raise ValueError(f"Unsupported owner fields: {', '.join(sorted(unknown))}")
+        current = self._owner_values(node_id)
+        current.update(values)
+        long_name = str(current["long_name"]).strip()
+        short_name = str(current["short_name"]).strip()
+        if not long_name:
+            raise ValueError("Дългото име не може да бъде празно")
+        if not short_name:
+            raise ValueError("Краткото име не може да бъде празно")
+        if len(short_name) > 4:
+            raise ValueError("Краткото име може да съдържа най-много 4 знака")
+        managed = self._managed_node(node_id)
+        interface = self._connected_interface()
+        with self._command_lock:
+            managed.setOwner(
+                long_name=long_name,
+                short_name=short_name,
+                is_licensed=bool(current["is_licensed"]),
+                is_unmessagable=bool(current["is_unmessagable"]),
+            )
+            if node_id:
+                interface.waitForAckNak()
+        self._add_event(
+            "config",
+            message="Owner/User settings written",
             node_id=node_id or self._profile_id,
             remote=bool(node_id),
         )
@@ -863,6 +1033,213 @@ class MeshtasticManager:
         )
         return {"written": written}
 
+    def request_admin_action(
+        self,
+        action: str,
+        node_id: str | None = None,
+        preserve_node_preferences: bool = False,
+    ) -> None:
+        supported = {
+            "reboot",
+            "shutdown",
+            "reset_nodedb",
+            "factory_reset_config",
+            "factory_reset_device",
+        }
+        if action not in supported:
+            raise ValueError(f"Unsupported administration action: {action}")
+        node_id = (
+            self._validate_node_destination(node_id).lower() if node_id else None
+        )
+        if preserve_node_preferences and (
+            action != "reset_nodedb" or node_id is not None
+        ):
+            raise ValueError(
+                "Favorite/ignored preservation is available only when resetting "
+                "the connected radio's NodeDB"
+            )
+        interface = self._connected_interface()
+        with self._lock:
+            generation = self._generation
+        self._add_event(
+            "operation_request",
+            operation="administration",
+            admin_action=action,
+            target=node_id or self._profile_id,
+            remote=bool(node_id),
+            preserve_node_preferences=preserve_node_preferences,
+        )
+
+        def worker() -> None:
+            preferences: list[tuple[str, str]] = []
+            try:
+                if action == "reset_nodedb" and preserve_node_preferences:
+                    for record in list((interface.nodes or {}).values()):
+                        item = _safe(record)
+                        user = item.get("user") or {}
+                        target = user.get("id")
+                        if not target:
+                            continue
+                        if _pick(item, "isFavorite", "is_favorite", default=False):
+                            preferences.append(("setFavorite", target))
+                        if _pick(item, "isIgnored", "is_ignored", default=False):
+                            preferences.append(("setIgnored", target))
+
+                managed = self._managed_node(node_id)
+                with self._command_lock:
+                    if action == "reboot":
+                        packet = managed.reboot(secs=10)
+                    elif action == "shutdown":
+                        packet = managed.shutdown(secs=10)
+                    elif action == "factory_reset_config":
+                        packet = managed.factoryReset(full=False)
+                    elif action == "factory_reset_device":
+                        packet = managed.factoryReset(full=True)
+                    else:
+                        packet = managed.resetNodeDb()
+                    if node_id:
+                        interface.waitForAckNak()
+
+                restored = 0
+                if preferences:
+                    time.sleep(2)
+                    with self._lock:
+                        still_current = (
+                            generation == self._generation
+                            and interface is self._interface
+                        )
+                    if still_current:
+                        with self._command_lock:
+                            for method, target in preferences:
+                                getattr(interface.localNode, method)(target)
+                                restored += 1
+
+                self._add_event(
+                    "operation_result",
+                    operation="administration",
+                    admin_action=action,
+                    target=node_id or self._profile_id,
+                    remote=bool(node_id),
+                    success=True,
+                    result={
+                        "accepted": True,
+                        "restored_preferences": restored,
+                    },
+                    packet=_safe(packet),
+                )
+            except Exception as exc:
+                logger.exception("Meshtastic administration action failed")
+                self._add_event(
+                    "operation_result",
+                    operation="administration",
+                    admin_action=action,
+                    target=node_id or self._profile_id,
+                    remote=bool(node_id),
+                    success=False,
+                    error=str(exc) or type(exc).__name__,
+                )
+
+        threading.Thread(
+            target=worker,
+            name=f"meshdesk-admin-{action}",
+            daemon=True,
+        ).start()
+
+    def _last_history_marker(self) -> int:
+        with self._lock:
+            profile_id = self._profile_id
+        if not profile_id:
+            return 0
+        with contextlib.suppress(Exception):
+            for event in reversed(self._history_store().load(profile_id)):
+                if (
+                    event.get("kind") == "store_forward"
+                    and event.get("status") == "history"
+                ):
+                    marker = event.get("last_request")
+                    if isinstance(marker, int) and marker > 0:
+                        return marker
+        return 0
+
+    def request_history_replay(
+        self,
+        window_minutes: int | None = None,
+        max_messages: int | None = None,
+        *,
+        automatic: bool = False,
+    ) -> dict[str, Any]:
+        interface = self._connected_interface()
+        with self._lock:
+            profile_id = self._profile_id
+        if not profile_id:
+            raise RuntimeError("The connected radio profile is not ready")
+
+        config = interface.localNode.moduleConfig.store_forward
+        window = int(
+            window_minutes
+            if window_minutes is not None
+            else config.history_return_window or DEFAULT_HISTORY_WINDOW_MINUTES
+        )
+        maximum = int(
+            max_messages
+            if max_messages is not None
+            else config.history_return_max or DEFAULT_HISTORY_MAX_MESSAGES
+        )
+        if not 1 <= window <= 60 * 24 * 30:
+            raise ValueError("History window must be between 1 and 43200 minutes")
+        if not 1 <= maximum <= 500:
+            raise ValueError("History maximum must be between 1 and 500 messages")
+        last_request = self._last_history_marker()
+        payload = storeforward_pb2.StoreAndForward(
+            rr=storeforward_pb2.StoreAndForward.CLIENT_HISTORY,
+            history=storeforward_pb2.StoreAndForward.History(
+                last_request=last_request,
+                window=window,
+                history_messages=maximum,
+            ),
+        )
+        with self._command_lock:
+            packet = interface.sendData(
+                payload,
+                destinationId=profile_id,
+                portNum=portnums_pb2.PortNum.STORE_FORWARD_APP,
+                wantAck=False,
+                channelIndex=0,
+            )
+        with self._lock:
+            self._history_replay_requested_at = int(time.time())
+            self._history_replay_remaining = 0
+        safe_packet = _safe(packet)
+        self._add_event(
+            "operation_request",
+            operation="history_replay",
+            target=profile_id,
+            automatic=automatic,
+            last_request=last_request,
+            window=window,
+            max_messages=maximum,
+            packet=safe_packet,
+        )
+        return safe_packet
+
+    def _history_replay_after_connect(self, generation: int, interface: Any) -> None:
+        time.sleep(0.75)
+        with self._lock:
+            if generation != self._generation or interface is not self._interface:
+                return
+        try:
+            self.request_history_replay(automatic=True)
+        except Exception as exc:
+            logger.info("Automatic history replay was not available: %s", exc)
+            self._add_event(
+                "operation_result",
+                operation="history_replay",
+                target=self._profile_id,
+                automatic=True,
+                success=False,
+                error=str(exc) or type(exc).__name__,
+            )
+
     def status(self) -> dict[str, Any]:
         with self._lock:
             interface = self._interface
@@ -956,11 +1333,136 @@ class MeshtasticManager:
             return []
         return self._history_store().load(profile_id)
 
+    def _handle_store_forward(
+        self,
+        packet: dict[str, Any],
+        decoded: dict[str, Any],
+    ) -> bool:
+        store_forward = decoded.get("storeforward") or decoded.get("storeForward")
+        if not isinstance(store_forward, dict):
+            return False
+        raw = store_forward.get("raw")
+        rr_value = store_forward.get("rr", "")
+        if raw is not None:
+            with contextlib.suppress(Exception):
+                rr_value = storeforward_pb2.StoreAndForward.RequestResponse.Name(
+                    raw.rr
+                )
+        rr = str(rr_value)
+
+        if rr in {"ROUTER_TEXT_DIRECT", "ROUTER_TEXT_BROADCAST"}:
+            text_value: Any = store_forward.get("text", "")
+            if raw is not None:
+                with contextlib.suppress(Exception):
+                    text_value = bytes(raw.text)
+            if isinstance(text_value, bytes):
+                text = text_value.decode("utf-8", errors="replace")
+            else:
+                text = str(text_value)
+            direct = rr == "ROUTER_TEXT_DIRECT"
+            from_id = packet.get("fromId") or packet.get("from")
+            self._add_event(
+                "incoming",
+                text=text,
+                portnum="TEXT_MESSAGE_APP",
+                original_portnum="STORE_FORWARD_APP",
+                store_forward=True,
+                recovered=True,
+                is_direct=direct,
+                conversation=(
+                    f"direct:{from_id}"
+                    if direct
+                    else f"channel:{packet.get('channel', 0)}"
+                ),
+                **{
+                    "from": from_id,
+                    "to": packet.get("toId") or packet.get("to"),
+                    "channel": packet.get("channel", 0),
+                    "snr": packet.get("rxSnr"),
+                    "rssi": packet.get("rxRssi"),
+                    "via_mqtt": packet.get("viaMqtt") or False,
+                    "packet": packet,
+                },
+            )
+            return True
+
+        history = store_forward.get("history")
+        if raw is not None:
+            with contextlib.suppress(Exception):
+                if raw.HasField("history"):
+                    history = {
+                        "historyMessages": raw.history.history_messages,
+                        "window": raw.history.window,
+                        "lastRequest": raw.history.last_request,
+                    }
+        if isinstance(history, dict):
+            history_messages = int(
+                _pick(history, "historyMessages", "history_messages", default=0)
+            )
+            with self._lock:
+                self._history_replay_remaining = history_messages
+            self._add_event(
+                "store_forward",
+                status="history",
+                router=packet.get("fromId") or packet.get("from"),
+                history_messages=history_messages,
+                window=int(history.get("window", 0)),
+                last_request=int(
+                    _pick(history, "lastRequest", "last_request", default=0)
+                ),
+                packet=packet,
+            )
+            return True
+
+        stats = store_forward.get("stats")
+        if raw is not None:
+            with contextlib.suppress(Exception):
+                if raw.HasField("stats"):
+                    stats = MessageToDict(
+                        raw.stats,
+                        preserving_proto_field_name=True,
+                    )
+        if isinstance(stats, dict):
+            self._add_event(
+                "store_forward",
+                status="stats",
+                router=packet.get("fromId") or packet.get("from"),
+                stats=stats,
+                packet=packet,
+            )
+            return True
+
+        self._add_event(
+            "store_forward",
+            status=rr or "response",
+            router=packet.get("fromId") or packet.get("from"),
+            packet=packet,
+        )
+        return True
+
     def _on_receive(self, packet: dict[str, Any], interface: Any) -> None:
         with self._lock:
             if interface is not self._interface:
+                if self._state == "connecting" and self._interface is None:
+                    self._pending_receive_packets.append((interface, packet))
                 return
         decoded = packet.get("decoded") or {}
+        if decoded.get("portnum") == "STORE_FORWARD_APP" and self._handle_store_forward(
+            packet, decoded
+        ):
+            return
+        recovered = False
+        if decoded.get("portnum") == "TEXT_MESSAGE_APP":
+            rx_time = _pick(packet, "rxTime", "rx_time")
+            with self._lock:
+                if (
+                    self._history_replay_remaining > 0
+                    and self._history_replay_requested_at is not None
+                    and isinstance(rx_time, (int, float))
+                    and int(rx_time) <= self._history_replay_requested_at
+                ):
+                    recovered = True
+                    self._history_replay_remaining -= 1
         to_id = packet.get("toId")
         is_direct = bool(to_id and to_id != "^all")
         hop_start = packet.get("hopStart")
@@ -974,6 +1476,8 @@ class MeshtasticManager:
             "incoming",
             text=decoded.get("text"),
             portnum=decoded.get("portnum"),
+            store_forward=recovered,
+            recovered=recovered,
             is_direct=is_direct,
             conversation=(
                 f"direct:{packet.get('fromId') or packet.get('from')}"

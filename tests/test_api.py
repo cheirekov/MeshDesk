@@ -34,9 +34,25 @@ class StubManager:
         self.calls.append(("send", text, destination, channel, want_ack))
         return {"id": 7}
 
-    def request_node_action(self, node_id, action, channel, telemetry_type, hop_limit):
+    def request_node_action(
+        self,
+        node_id,
+        action,
+        channel,
+        telemetry_type,
+        hop_limit,
+        managed_node_id,
+    ):
         self.calls.append(
-            ("node_action", node_id, action, channel, telemetry_type, hop_limit)
+            (
+                "node_action",
+                node_id,
+                action,
+                channel,
+                telemetry_type,
+                hop_limit,
+                managed_node_id,
+            )
         )
         return {"id": 9}
 
@@ -45,6 +61,13 @@ class StubManager:
 
     def request_remote_config(self, node_id, section):
         self.calls.append(("remote_config", node_id, section))
+
+    def request_history_replay(self, window, maximum):
+        self.calls.append(("history_replay", window, maximum))
+        return {"id": 10}
+
+    def request_admin_action(self, action, node_id, preserve):
+        self.calls.append(("administration", action, node_id, preserve))
 
 
 def test_tcp_connection_endpoint():
@@ -90,6 +113,7 @@ def test_node_action_endpoint():
         1,
         "device",
         4,
+        None,
     )
 
 
@@ -104,3 +128,25 @@ def test_history_and_remote_config_endpoints():
     assert history.json()["events"][0]["event_id"] == "saved-1"
     assert remote.status_code == 202
     assert manager.calls[0] == ("remote_config", "!12345678", "lora")
+
+
+def test_history_replay_and_administration_endpoints():
+    manager = StubManager()
+    with TestClient(create_app(manager)) as client:
+        history = client.post(
+            "/api/history/replay",
+            json={"window_minutes": 120, "max_messages": 25},
+        )
+        administration = client.post(
+            "/api/administration",
+            json={
+                "action": "reset_nodedb",
+                "preserve_node_preferences": True,
+            },
+        )
+    assert history.status_code == 202
+    assert administration.status_code == 202
+    assert manager.calls[:2] == [
+        ("history_replay", 120, 25),
+        ("administration", "reset_nodedb", None, True),
+    ]

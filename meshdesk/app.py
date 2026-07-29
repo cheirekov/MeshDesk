@@ -73,6 +73,24 @@ class NodeActionRequest(BaseModel):
         "local_stats",
     ] = "device"
     hop_limit: int | None = Field(default=None, ge=1, le=7)
+    managed_node_id: str | None = None
+
+
+class AdminActionRequest(BaseModel):
+    action: Literal[
+        "reboot",
+        "shutdown",
+        "reset_nodedb",
+        "factory_reset_config",
+        "factory_reset_device",
+    ]
+    node_id: str | None = None
+    preserve_node_preferences: bool = False
+
+
+class HistoryReplayRequest(BaseModel):
+    window_minutes: int | None = Field(default=None, ge=1, le=43200)
+    max_messages: int | None = Field(default=None, ge=1, le=500)
 
 
 def create_app(manager: MeshtasticManager | None = None) -> FastAPI:
@@ -160,6 +178,7 @@ def create_app(manager: MeshtasticManager | None = None) -> FastAPI:
                 request.channel,
                 request.telemetry_type,
                 request.hop_limit,
+                request.managed_node_id,
             )
             return {"packet": packet}
         except (ValueError, RuntimeError) as exc:
@@ -242,6 +261,33 @@ def create_app(manager: MeshtasticManager | None = None) -> FastAPI:
     @api.get("/api/history")
     def history() -> dict:
         return {"events": radio.history()}
+
+    @api.post("/api/history/replay", status_code=202)
+    def replay_history(request: HistoryReplayRequest) -> dict:
+        try:
+            packet = radio.request_history_replay(
+                request.window_minutes,
+                request.max_messages,
+            )
+            return {"accepted": True, "packet": packet}
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc) or type(exc).__name__) from exc
+
+    @api.post("/api/administration", status_code=202)
+    def administration(request: AdminActionRequest) -> dict:
+        try:
+            radio.request_admin_action(
+                request.action,
+                request.node_id,
+                request.preserve_node_preferences,
+            )
+            return {"accepted": True}
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc) or type(exc).__name__) from exc
 
     @api.post("/api/messages")
     def send_message(request: MessageRequest) -> dict:

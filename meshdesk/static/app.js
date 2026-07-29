@@ -28,6 +28,106 @@ const statusLabels = {
   error: "Грешка",
 };
 
+const roleGuidance = {
+  CLIENT: {
+    badge: "Препоръчителен default",
+    className: "recommended",
+    summary:
+      "За повечето portable и ежедневно използвани устройства. Участва нормално в mesh-а и избягва ненужен relay, когато друг node вече е препредал пакета.",
+    use: "Телефон/лаптоп gateway, handheld и общ Meshtastic node",
+    power: "Батерия или постоянно захранване",
+    relay: "Адаптивен, стандартен",
+    caution: "Първият избор, освен ако измерена топология не налага специална роля.",
+  },
+  CLIENT_BASE: {
+    badge: "База с избрани peers",
+    className: "recommended",
+    summary:
+      "Фиксирана операторска база. При актуален firmware дава ROUTER_LATE-подобно подпомагане само за трафик от/към favorited nodes и остава CLIENT за останалите.",
+    use: "Домашна база с кратък, умишлено подбран favorite списък",
+    power: "Препоръчително постоянно",
+    relay: "Приоритетно за favorites",
+    caution: "Провери firmware capability и favorites преди прилагане.",
+  },
+  CLIENT_MUTE: {
+    badge: "Без relay",
+    className: "",
+    summary:
+      "Изпраща и получава собствен трафик, но не препредава чужди пакети. Намалява airtime в гъста мрежа.",
+    use: "Monitoring endpoint, тестов node или много гъста локална мрежа",
+    power: "Батерия или постоянно",
+    relay: "Изключен",
+    caution: "Не го използвай на node, който свързва две части на mesh-а.",
+  },
+  ROUTER: {
+    badge: "Инфраструктура · висок ефект",
+    className: "infrastructure",
+    summary:
+      "Винаги rebroadcast-ва и го прави възможно най-бързо. Подходящ само за стратегически разположена инфраструктура.",
+    use: "Висока точка, добра антена, доказана нужда от backbone relay",
+    power: "Постоянно и надеждно",
+    relay: "Агресивен / винаги",
+    caution: "Прекалено много ROUTER nodes увеличават collisions, queue pressure и duty-cycle.",
+  },
+  ROUTER_LATE: {
+    badge: "Допълваща инфраструктура",
+    className: "infrastructure",
+    summary:
+      "Rebroadcast-ва веднъж, но след по-ранните подходящи relays. Дава резервно покритие, без да се състезава първи.",
+    use: "Supplemental coverage между clusters или резервен инфраструктурен node",
+    power: "Постоянно и надеждно",
+    relay: "Винаги, но отложено",
+    caution: "Пак е инфраструктурна роля; наблюдавай utilization и relay counters.",
+  },
+};
+
+const configSectionGuidance = {
+  lora: {
+    title: "LoRa: промяна с ефект върху цялата свързаност",
+    warning: true,
+    text: "Region, modem preset и channel параметрите определят дали nodes изобщо могат да се чуват.",
+    bullets: [
+      "Region трябва да съответства на физическото местоположение и регулацията.",
+      "Preset трябва да е съвместим с останалата мрежа.",
+      "Hop limit 3 е разумна начална стойност; по-голям не означава автоматично по-добър.",
+    ],
+  },
+  security: {
+    title: "Security: идентичност и remote-admin доверие",
+    warning: true,
+    text: "Промяна на identity/admin ключове може да смени node ID или да прекъсне remote достъпа.",
+    bullets: [
+      "Не споделяй private key и не го включвай в bug reports.",
+      "Admin key дава право за отдалечена конфигурация.",
+      "Направи защитен backup преди re-key или factory reset.",
+    ],
+  },
+  network: {
+    title: "Network: пази резервен път за управление",
+    warning: true,
+    text: "Грешен SSID, PSK или IP параметър може веднага да прекъсне TCP връзката.",
+    bullets: ["При TCP промяна осигури BLE или USB fallback.", "Провери новия адрес преди масово прилагане."],
+  },
+  bluetooth: {
+    title: "Bluetooth: текущата BLE сесия може да бъде прекъсната",
+    warning: true,
+    text: "Pairing mode, PIN и enabled флагът влияят директно на начина за повторно свързване.",
+    bullets: ["Не изключвай BLE без TCP/USB fallback.", "Запиши новия fixed PIN в защитено място."],
+  },
+  power: {
+    title: "Power: профилът зависи от ролята и захранването",
+    warning: false,
+    text: "Portable, sensor и infrastructure nodes имат различни нужди от sleep и wake поведение.",
+    bullets: ["Router инфраструктурата изисква предвидимо захранване.", "Провери reachability след промяна на sleep timers."],
+  },
+  mqtt: {
+    title: "MQTT: интернет bridge с ефект върху airtime и privacy",
+    warning: false,
+    text: "Uplink/downlink и channel настройките определят как интернет трафикът влиза в LoRa mesh-а.",
+    bullets: ["Използвай custom channel PSK за частен трафик.", "Downlink към натоварен topic може да претовари локалната мрежа."],
+  },
+};
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -101,6 +201,11 @@ function updateControls(status) {
   $("#configTarget").disabled = !connected;
   $("#exportConfig").disabled = !connected;
   $("#importConfig").disabled = !connected;
+  $("#syncHistory").disabled = !connected;
+  $("#adminTarget").disabled = !connected;
+  document.querySelectorAll(".admin-action").forEach((button) => {
+    button.disabled = !connected;
+  });
   $("#localPublicKey").textContent = status.public_key || "—";
   updateByteCount();
   if (status.error && status.error !== state.lastError) toast(status.error, true);
@@ -494,6 +599,11 @@ function renderChat() {
                   message.eventId,
                 )}" title="Покажи packet metadata">ⓘ Детайли</button>
                 <time>${escapeHtml(messageTime(message.time))}</time>
+                ${
+                  message.sourceEvent?.recovered
+                    ? '<span class="delivery recovered">↻ от радиото</span>'
+                    : ""
+                }
                 ${message.direction === "outgoing" ? deliveryLabel(message) : ""}
               </div>
             </div>
@@ -572,6 +682,39 @@ function fillConfigTargets() {
     select.value = current;
   }
   $("#remoteConfigControls").classList.toggle("hidden", !select.value);
+  fillAdminTargets();
+}
+
+function fillAdminTargets() {
+  const select = $("#adminTarget");
+  const current = select.value;
+  select.innerHTML = `<option value="">Локално: ${escapeHtml(
+    state.status?.profile_name || state.profileId || "радио",
+  )}</option>`;
+  state.nodes.forEach((node) => {
+    select.add(
+      new Option(
+        `Remote: ${node.long_name} (${node.short_name}) · ${node.id}`,
+        node.id,
+      ),
+    );
+  });
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+  updateAdminTarget();
+}
+
+function updateAdminTarget() {
+  const remote = Boolean($("#adminTarget").value);
+  $("#adminTargetHint").textContent = remote
+    ? "Командата ще мине през LoRa remote-admin и изисква разрешен PKI public key."
+    : "Командата се изпраща към директно свързаното радио.";
+  $("#preserveNodePreferences").disabled = remote;
+  if (remote) $("#preserveNodePreferences").checked = false;
+  $("#preserveNodePreferencesHint").textContent = remote
+    ? "Remote NodeDB не може да бъде прочетена предварително; запазването не е достъпно."
+    : "MeshDesk ще запише текущите favorite/ignore флагове и ще ги приложи отново.";
 }
 
 function renderNodes(nodes) {
@@ -663,7 +806,7 @@ function renderNodes(nodes) {
             ? `<span class="node-badge">${escapeHtml(node.hops_away)} hops</span>`
             : '<span class="node-badge">radio</span>';
       return `
-        <article class="node-card">
+        <article class="node-card${node.is_ignored ? " node-ignored" : ""}">
           <div class="node-avatar">${escapeHtml(node.short_name.slice(0, 4))}</div>
           <div class="node-name">
             <strong>${escapeHtml(node.long_name)}</strong>
@@ -671,7 +814,11 @@ function renderNodes(nodes) {
               node.role ? ` · ${escapeHtml(node.role)}` : ""
             }</span>
           </div>
-          <div class="node-state">${transportLabel}</div>
+          <div class="node-state">
+            ${transportLabel}
+            ${node.is_favorite ? '<span class="node-badge direct">★ любим</span>' : ""}
+            ${node.is_ignored ? '<span class="node-badge ignored">⊘ игнориран</span>' : ""}
+          </div>
           <div class="node-metrics">
             <div class="metric"><span>батерия</span><strong>${battery}</strong></div>
             <div class="metric"><span>последен SNR</span><strong>${snr}</strong></div>
@@ -682,6 +829,18 @@ function renderNodes(nodes) {
             )}</strong></div>
           </div>
           <div class="node-actions">
+            <button type="button"
+              class="node-preference ghost${node.is_favorite ? " active" : ""}"
+              data-action="${node.is_favorite ? "unfavorite" : "favorite"}"
+              data-node="${escapeHtml(node.id)}"
+              title="${node.is_favorite ? "Премахни от любими" : "Добави в любими"}"
+              aria-label="${node.is_favorite ? "Премахни от любими" : "Добави в любими"}">★</button>
+            <button type="button"
+              class="node-preference ignored ghost${node.is_ignored ? " active" : ""}"
+              data-action="${node.is_ignored ? "unignore" : "ignore"}"
+              data-node="${escapeHtml(node.id)}"
+              title="${node.is_ignored ? "Спри игнорирането" : "Игнорирай възела"}"
+              aria-label="${node.is_ignored ? "Спри игнорирането" : "Игнорирай възела"}">⊘</button>
             <button type="button" class="node-message ghost" data-node="${escapeHtml(
               node.id,
             )}" ${node.is_messageable ? "" : "disabled"}>Съобщение</button>
@@ -706,6 +865,11 @@ function renderNodes(nodes) {
     });
   });
   container.querySelectorAll(".node-quick-action").forEach((button) => {
+    button.addEventListener("click", () =>
+      requestNodeAction(button.dataset.node, button.dataset.action),
+    );
+  });
+  container.querySelectorAll(".node-preference").forEach((button) => {
     button.addEventListener("click", () =>
       requestNodeAction(button.dataset.node, button.dataset.action),
     );
@@ -766,6 +930,17 @@ function operationLabel(event) {
   if (event.operation === "ignore") return "Игнориране на възел";
   if (event.operation === "unignore") return "Спиране на игнорирането";
   if (event.operation === "remote_config") return "Remote configuration";
+  if (event.operation === "history_replay") return "Синхронизация на историята";
+  if (event.operation === "administration") {
+    const labels = {
+      reboot: "Рестартиране",
+      shutdown: "Изключване",
+      reset_nodedb: "Изчистване на NodeDB",
+      factory_reset_config: "Нулиране на конфигурацията",
+      factory_reset_device: "Пълно фабрично нулиране",
+    };
+    return labels[event.admin_action] || "Администрация";
+  }
   const names = {
     device: "Device telemetry",
     environment: "Environment telemetry",
@@ -781,9 +956,16 @@ function operationResultHtml(event) {
     event.kind === "operation_request" ? "pending" : event.success ? "success" : "failed";
   let body = "";
   if (event.kind === "operation_request") {
-    body = `<p>Заявката е изпратена · channel ${escapeHtml(
-      event.channel,
-    )} · hop limit ${escapeHtml(event.hop_limit)}</p>`;
+    body =
+      event.operation === "history_replay"
+        ? `<p>Поискани до ${escapeHtml(event.max_messages)} съобщения за ${
+            escapeHtml(event.window)
+          } минути · marker ${escapeHtml(event.last_request)}</p>`
+        : event.operation === "administration"
+          ? `<p>Административната команда е приета за изпращане.</p>`
+          : `<p>Заявката е изпратена · channel ${escapeHtml(
+              event.channel,
+            )} · hop limit ${escapeHtml(event.hop_limit)}</p>`;
   } else if (!event.success) {
     body = `<p>${escapeHtml(event.error || "Няма отговор от възела")}</p>`;
   } else if (event.operation === "traceroute") {
@@ -798,6 +980,16 @@ function operationResultHtml(event) {
     body = metricTable(event.result?.position);
   } else if (event.operation === "remote_config") {
     body = `<p>Секция „${escapeHtml(event.section)}“ е заредена чрез PKI admin.</p>`;
+  } else if (event.operation === "administration") {
+    body = `<p>Командата е изпратена към устройството.${
+      event.result?.restored_preferences
+        ? ` Възстановени preference флагове: ${escapeHtml(
+            event.result.restored_preferences,
+          )}.`
+        : ""
+    }</p>`;
+  } else if (event.operation === "history_replay") {
+    body = "<p>Радиото прие заявката за синхронизация.</p>";
   } else {
     body = "<p>Node database е обновена.</p>";
   }
@@ -853,6 +1045,17 @@ function renderNodeInspector(node) {
       : Number(node.hops_away) === 0
         ? "директен peer"
         : `${node.hops_away} radio hops`;
+  const managedNodeOptions = [
+    `<option value="">Локално: ${escapeHtml(
+      state.status?.profile_name || state.profileId || "радио",
+    )}</option>`,
+    ...state.nodes.map(
+      (candidate) =>
+        `<option value="${escapeHtml(candidate.id)}">Remote: ${escapeHtml(
+          candidate.long_name,
+        )} · ${escapeHtml(candidate.id)}</option>`,
+    ),
+  ].join("");
   $("#inspectorContent").innerHTML = `
     <section class="inspector-section">
       <div class="inspector-section-title">
@@ -885,6 +1088,10 @@ function renderNodeInspector(node) {
 
     <section class="inspector-section">
       <div class="inspector-section-title"><h3>Node database</h3></div>
+      <label class="inspector-admin-target">
+        Промени NodeDB на
+        <select id="inspectorNodeDbTarget">${managedNodeOptions}</select>
+      </label>
       <div class="inspector-actions">
         <button type="button" class="ghost inspector-action"
           data-action="${node.is_favorite ? "unfavorite" : "favorite"}">${
@@ -895,8 +1102,8 @@ function renderNodeInspector(node) {
             node.is_ignored ? "Спри игнорирането" : "Игнорирай възела"
           }</button>
       </div>
-      <p class="inspector-note">Игнорирането променя NodeDB на свързаното радио и
-        може да спре обработката на пакети от този възел.</p>
+      <p class="inspector-note">При Remote избор заявката минава през PKI admin.
+        Игнорирането може да спре обработката на пакети от този възел от избраното радио.</p>
     </section>
 
     <section class="inspector-section">
@@ -961,7 +1168,15 @@ function renderNodeInspector(node) {
         button.dataset.action === "telemetry"
           ? $("#inspectorTelemetryType").value
           : "device";
-      requestNodeAction(node.id, button.dataset.action, telemetryType);
+      const isNodeDbAction = ["favorite", "unfavorite", "ignore", "unignore"].includes(
+        button.dataset.action,
+      );
+      requestNodeAction(
+        node.id,
+        button.dataset.action,
+        telemetryType,
+        isNodeDbAction ? $("#inspectorNodeDbTarget").value : null,
+      );
     });
   });
   $(".inspector-message").addEventListener("click", () => {
@@ -1130,7 +1345,12 @@ function renderInspector() {
   }
 }
 
-async function requestNodeAction(nodeId, action, telemetryType = "device") {
+async function requestNodeAction(
+  nodeId,
+  action,
+  telemetryType = "device",
+  managedNodeId = null,
+) {
   if (
     action === "ignore" &&
     !confirm("Радиото може да спре да обработва пакети от този възел. Да продължа ли?")
@@ -1145,9 +1365,25 @@ async function requestNodeAction(nodeId, action, telemetryType = "device") {
         action,
         telemetry_type: telemetryType,
         channel: Number($("#channel").value || 0),
+        managed_node_id: managedNodeId || null,
       }),
     });
-    toast(`${operationLabel({ operation: action, telemetry_type: telemetryType })} е изпратен`);
+    if (!managedNodeId) {
+      const node = nodeForId(nodeId);
+      if (node && ["favorite", "unfavorite", "ignore", "unignore"].includes(action)) {
+        if (action === "favorite") node.is_favorite = true;
+        if (action === "unfavorite") node.is_favorite = false;
+        if (action === "ignore") node.is_ignored = true;
+        if (action === "unignore") node.is_ignored = false;
+        renderNodes(state.nodes);
+        if (state.inspector?.type === "node") renderInspector();
+      }
+    }
+    toast(
+      `${operationLabel({ operation: action, telemetry_type: telemetryType })} ${
+        managedNodeId ? "е изпратено към remote NodeDB" : "е приложено"
+      }`,
+    );
   } catch (error) {
     toast(error.message, true);
   }
@@ -1200,6 +1436,69 @@ async function refreshChannels() {
   }
 }
 
+function roleAdvisorCard(role, guidance) {
+  return `<article class="role-advisor-card ${guidance.className}">
+    <div class="role-advisor-card-head">
+      <h3>${escapeHtml(role)}</h3>
+      <span class="role-badge">${escapeHtml(guidance.badge)}</span>
+    </div>
+    <p>${escapeHtml(guidance.summary)}</p>
+    <div class="role-advisor-meta">
+      <span>Подходящо</span><strong>${escapeHtml(guidance.use)}</strong>
+      <span>Захранване</span><strong>${escapeHtml(guidance.power)}</strong>
+      <span>Relay</span><strong>${escapeHtml(guidance.relay)}</strong>
+      <span>Внимание</span><strong>${escapeHtml(guidance.caution)}</strong>
+    </div>
+  </article>`;
+}
+
+function renderRoleAdvisor() {
+  $("#roleAdvisorCards").innerHTML = Object.entries(roleGuidance)
+    .map(([role, guidance]) => roleAdvisorCard(role, guidance))
+    .join("");
+}
+
+function renderConfigGuidance(section) {
+  const container = $("#configGuidance");
+  if (!container || !section) return;
+  if (section.name === "device") {
+    const role = $("#config-role")?.value;
+    const guidance = roleGuidance[role];
+    if (!guidance) {
+      container.className = "config-guidance";
+      container.innerHTML = `
+        <h4>Device role</h4>
+        <p>Тази role стойност няма локално описание. Провери firmware документацията,
+          преди да я приложиш.</p>`;
+      return;
+    }
+    container.className = `config-guidance ${
+      guidance.className === "infrastructure" ? "warning" : ""
+    }`;
+    container.innerHTML = `
+      <h4>${escapeHtml(role)} · ${escapeHtml(guidance.badge)}</h4>
+      <p>${escapeHtml(guidance.summary)}</p>
+      <ul>
+        <li><strong>Подходящо:</strong> ${escapeHtml(guidance.use)}</li>
+        <li><strong>Внимание:</strong> ${escapeHtml(guidance.caution)}</li>
+      </ul>`;
+    return;
+  }
+  const guidance = configSectionGuidance[section.name];
+  if (!guidance) {
+    container.className = "config-guidance hidden";
+    container.innerHTML = "";
+    return;
+  }
+  container.className = `config-guidance ${guidance.warning ? "warning" : ""}`;
+  container.innerHTML = `
+    <h4>${escapeHtml(guidance.title)}</h4>
+    <p>${escapeHtml(guidance.text)}</p>
+    <ul>${guidance.bullets
+      .map((item) => `<li>${escapeHtml(item)}</li>`)
+      .join("")}</ul>`;
+}
+
 function fieldControl(field) {
   const id = `config-${field.name}`;
   const common = `id="${id}" name="${field.name}" data-type="${field.type}" ${
@@ -1245,14 +1544,21 @@ function selectConfigSection(name) {
     form.textContent = "Избери секция.";
     return;
   }
+  const kindLabel =
+    section.kind === "owner" ? "USER" : section.kind === "radio" ? "RADIO" : "MODULE";
   form.className = "config-form";
   form.innerHTML = `
     <div class="config-form-title">
-      <div><span>${section.kind === "radio" ? "RADIO" : "MODULE"}</span>
+      <div><span>${kindLabel}</span>
       <h3>${escapeHtml(section.label)}</h3></div>
       <button type="submit" class="primary">Запиши секцията</button>
     </div>
+    <div id="configGuidance" class="config-guidance hidden"></div>
     <div class="config-fields">${section.fields.map(fieldControl).join("")}</div>`;
+  renderConfigGuidance(section);
+  if (section.name === "device") {
+    $("#config-role")?.addEventListener("change", () => renderConfigGuidance(section));
+  }
 }
 
 function renderConfig(sections) {
@@ -1273,7 +1579,9 @@ function renderConfig(sections) {
       (section) =>
         `<button type="button" class="config-section" data-section="${escapeHtml(
           section.name,
-        )}"><span>${section.kind === "radio" ? "R" : "M"}</span>${escapeHtml(
+        )}"><span>${
+          section.kind === "owner" ? "U" : section.kind === "radio" ? "R" : "M"
+        }</span>${escapeHtml(
           section.label,
         )}</button>`,
     )
@@ -1421,6 +1729,71 @@ async function refreshNodes() {
   }
 }
 
+async function syncRadioHistory() {
+  const button = $("#syncHistory");
+  button.disabled = true;
+  const previous = button.textContent;
+  button.textContent = "Синхронизиране…";
+  try {
+    await api("/api/history/replay", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    toast("Заявката за пропуснати съобщения е изпратена към радиото");
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.textContent = previous;
+    button.disabled = state.connection !== "connected";
+  }
+}
+
+async function runAdminAction(action) {
+  const nodeId = $("#adminTarget").value || null;
+  const targetName = $("#adminTarget").selectedOptions[0]?.textContent || "радиото";
+  const confirmations = {
+    reboot: `Да рестартирам ${targetName} след 10 секунди?`,
+    shutdown: `Да изключа ${targetName} след 10 секунди?`,
+    reset_nodedb: `Да изчистя NodeDB на ${targetName}?`,
+  };
+  if (confirmations[action] && !confirm(confirmations[action])) return;
+  if (action === "factory_reset_config") {
+    const typed = prompt(
+      `Това ще нулира конфигурацията на ${targetName}. Въведи RESET CONFIG за потвърждение.`,
+    );
+    if (typed !== "RESET CONFIG") {
+      if (typed !== null) toast("Нулирането е отказано: потвърждението не съвпада", true);
+      return;
+    }
+  }
+  if (action === "factory_reset_device") {
+    const typed = prompt(
+      `ПЪЛНО И НЕОБРАТИМО нулиране на ${targetName}. Въведи FULL RESET за потвърждение.`,
+    );
+    if (typed !== "FULL RESET") {
+      if (typed !== null) toast("Пълното нулиране е отказано", true);
+      return;
+    }
+  }
+  const preserve =
+    action === "reset_nodedb" &&
+    !nodeId &&
+    $("#preserveNodePreferences").checked;
+  try {
+    await api("/api/administration", {
+      method: "POST",
+      body: JSON.stringify({
+        action,
+        node_id: nodeId,
+        preserve_node_preferences: preserve,
+      }),
+    });
+    toast(`${operationLabel({ operation: "administration", admin_action: action })} е изпратено`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 async function sendMessage(event) {
   event.preventDefault();
   const text = $("#messageText").value.trim();
@@ -1466,6 +1839,7 @@ function eventTitle(event) {
   if (event.kind === "operation_result")
     return `${operationLabel(event)} · ${event.success ? "отговор" : "грешка"}`;
   if (event.kind === "config") return "Конфигурация";
+  if (event.kind === "store_forward") return "Store & Forward история";
   if (event.kind === "error") return "Грешка";
   return "Състояние";
 }
@@ -1572,6 +1946,10 @@ function appendEvents(events, { historical = false } = {}) {
       (["operation_request", "operation_result"].includes(event.kind)
         ? `${operationLabel(event)} · ${event.target}${
             event.error ? ` · ${event.error}` : ""
+          }`
+        : event.kind === "store_forward"
+        ? `Върнати ${event.history_messages ?? 0} съобщения · marker ${
+            event.last_request ?? "—"
           }`
         : event.kind === "delivery"
         ? event.error === "NONE"
@@ -1692,6 +2070,7 @@ $("#pairingPin").addEventListener("keydown", (event) => {
   if (event.key === "Enter") submitPairingPin();
 });
 $("#messageForm").addEventListener("submit", sendMessage);
+$("#syncHistory").addEventListener("click", syncRadioHistory);
 $("#messageText").addEventListener("input", updateByteCount);
 $("#messageText").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -1724,6 +2103,10 @@ $("#configTarget").addEventListener("change", async () => {
   const remote = Boolean($("#configTarget").value);
   $("#remoteConfigControls").classList.toggle("hidden", !remote);
   await refreshConfig();
+});
+$("#adminTarget").addEventListener("change", updateAdminTarget);
+document.querySelectorAll(".admin-action").forEach((button) => {
+  button.addEventListener("click", () => runAdminAction(button.dataset.adminAction));
 });
 $("#loadRemoteConfig").addEventListener("click", loadRemoteConfig);
 $("#exportConfig").addEventListener("click", exportConfiguration);
@@ -1760,6 +2143,7 @@ document.addEventListener("keydown", (event) => {
 
 refreshStatus();
 pollEvents();
+renderRoleAdvisor();
 renderConversations();
 renderChat();
 setInterval(refreshStatus, 1500);
