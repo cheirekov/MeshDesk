@@ -16,6 +16,10 @@ const state = {
   inspector: null,
   profileId: null,
   connectionExpanded: true,
+  connectionProfiles: [],
+  connectionProfileDirty: false,
+  connectionProfileModalId: null,
+  roleAdvisorTrigger: null,
   status: null,
   readThrough: Number(localStorage.getItem("meshdeskReadThrough") || 0) || 0,
 };
@@ -27,6 +31,14 @@ const statusLabels = {
   connected: "Свързано",
   error: "Грешка",
 };
+
+function organizeWorkspace() {
+  const configuration = $("#configPanel");
+  const administration = $("#adminPanel");
+  if (configuration && administration) {
+    administration.parentElement.insertBefore(configuration, administration);
+  }
+}
 
 const roleGuidance = {
   CLIENT: {
@@ -133,7 +145,8 @@ async function api(path, options = {}) {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
-  const data = await response.json();
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
   if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
   return data;
 }
@@ -158,6 +171,171 @@ function setTransport(transport) {
     transport === "tcp"
       ? "Нативен Meshtastic TCP порт 4403 — без HTTP/CORS."
       : "Bluetooth се обслужва от Linux BlueZ — без Web Bluetooth.";
+}
+
+function connectionValues() {
+  return state.transport === "tcp"
+    ? {
+        transport: "tcp",
+        host: $("#tcpHost").value.trim(),
+        port: Number($("#tcpPort").value),
+        address: "",
+      }
+    : {
+        transport: "ble",
+        host: "",
+        port: 4403,
+        address: $("#bleDevice").value,
+      };
+}
+
+function connectionTarget(values) {
+  return values.transport === "tcp"
+    ? `${values.host || "—"}:${values.port || 4403}`
+    : values.address || "Няма избрано BLE устройство";
+}
+
+function selectedConnectionProfile() {
+  const profileId = $("#connectionProfile").value;
+  return state.connectionProfiles.find((profile) => profile.id === profileId) || null;
+}
+
+function updateConnectionProfileUi() {
+  const profile = selectedConnectionProfile();
+  $("#saveConnectionProfile").textContent = profile ? "Обнови профила" : "Запази като профил";
+  $("#deleteConnectionProfile").classList.toggle("hidden", !profile);
+  if (!profile) {
+    $("#connectionProfileHint").textContent =
+      "Профилите пазят само адреса и транспорта локално — без PIN, PSK или ключове.";
+    return;
+  }
+  const modified = state.connectionProfileDirty ? " · има незаписани промени" : "";
+  const lastUsed = profile.last_used_at
+    ? new Date(profile.last_used_at).toLocaleString()
+    : "никога";
+  $("#connectionProfileHint").textContent =
+    `${connectionTarget(profile)}${modified}. Последно използван: ${lastUsed}`;
+}
+
+function renderConnectionProfiles(selectedId = "") {
+  const select = $("#connectionProfile");
+  const activeId = selectedId || select.value;
+  select.innerHTML = "";
+  select.add(new Option("Ръчно въвеждане", ""));
+  state.connectionProfiles.forEach((profile) => {
+    const transport = profile.transport === "tcp" ? "TCP" : "BLE";
+    select.add(new Option(`${profile.name} · ${transport}`, profile.id));
+  });
+  select.value = state.connectionProfiles.some((profile) => profile.id === activeId)
+    ? activeId
+    : "";
+  updateConnectionProfileUi();
+}
+
+function applyConnectionProfile() {
+  const profile = selectedConnectionProfile();
+  state.connectionProfileDirty = false;
+  if (!profile) {
+    updateConnectionProfileUi();
+    return;
+  }
+  setTransport(profile.transport);
+  if (profile.transport === "tcp") {
+    $("#tcpHost").value = profile.host;
+    $("#tcpPort").value = profile.port;
+  } else {
+    const select = $("#bleDevice");
+    if (![...select.options].some((option) => option.value === profile.address)) {
+      select.add(new Option(`${profile.name} — ${profile.address}`, profile.address));
+    }
+    select.value = profile.address;
+  }
+  updateConnectionProfileUi();
+}
+
+function markConnectionProfileDirty() {
+  if (!selectedConnectionProfile()) return;
+  state.connectionProfileDirty = true;
+  updateConnectionProfileUi();
+}
+
+async function refreshConnectionProfiles(selectedId = "") {
+  try {
+    const result = await api("/api/connection-profiles");
+    state.connectionProfiles = result.profiles || [];
+    renderConnectionProfiles(selectedId);
+  } catch (error) {
+    toast(`Профилите не могат да бъдат заредени: ${error.message}`, true);
+  }
+}
+
+function openConnectionProfileModal() {
+  const profile = selectedConnectionProfile();
+  const values = connectionValues();
+  state.connectionProfileModalId = profile?.id || null;
+  $("#connectionProfileModalTitle").textContent = profile
+    ? "Обнови профила"
+    : "Запази връзката";
+  $("#connectionProfileSummary").textContent =
+    `${values.transport.toUpperCase()} · ${connectionTarget(values)}. ` +
+    "PIN, channel PSK и ключове не се съхраняват.";
+  $("#connectionProfileName").value =
+    profile?.name ||
+    (values.transport === "tcp"
+      ? values.host
+      : $("#bleDevice").selectedOptions[0]?.text || "");
+  $("#connectionProfileModal").classList.remove("hidden");
+  setTimeout(() => $("#connectionProfileName").focus(), 50);
+}
+
+function closeConnectionProfileModal() {
+  $("#connectionProfileModal").classList.add("hidden");
+  state.connectionProfileModalId = null;
+  $("#saveConnectionProfile").focus();
+}
+
+async function saveConnectionProfile() {
+  const name = $("#connectionProfileName").value.trim();
+  if (!name) {
+    toast("Въведи име на профила", true);
+    $("#connectionProfileName").focus();
+    return;
+  }
+  const profileId = state.connectionProfileModalId;
+  try {
+    const result = await api(
+      profileId
+        ? `/api/connection-profiles/${encodeURIComponent(profileId)}`
+        : "/api/connection-profiles",
+      {
+        method: profileId ? "PUT" : "POST",
+        body: JSON.stringify({ name, ...connectionValues() }),
+      },
+    );
+    $("#connectionProfileModal").classList.add("hidden");
+    state.connectionProfileModalId = null;
+    state.connectionProfileDirty = false;
+    await refreshConnectionProfiles(result.profile.id);
+    applyConnectionProfile();
+    toast(profileId ? "Профилът е обновен" : "Връзката е запазена като профил");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function deleteConnectionProfile() {
+  const profile = selectedConnectionProfile();
+  if (!profile || !confirm(`Да изтрия ли профила „${profile.name}“?`)) return;
+  try {
+    await api(`/api/connection-profiles/${encodeURIComponent(profile.id)}`, {
+      method: "DELETE",
+    });
+    state.connectionProfileDirty = false;
+    await refreshConnectionProfiles();
+    toast("Профилът е изтрит");
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 function updateControls(status) {
@@ -266,19 +444,18 @@ async function activateProfile(profileId, eventSequence) {
 
 async function connect(event) {
   event.preventDefault();
-  const body =
-    state.transport === "tcp"
-      ? {
-          transport: "tcp",
-          host: $("#tcpHost").value.trim(),
-          port: Number($("#tcpPort").value),
-        }
-      : { transport: "ble", address: $("#bleDevice").value };
+  const profile = selectedConnectionProfile();
+  const body = {
+    ...connectionValues(),
+    connection_profile_id:
+      profile && !state.connectionProfileDirty ? profile.id : null,
+  };
   try {
     const status = await api("/api/connect", {
       method: "POST",
       body: JSON.stringify(body),
     });
+    if (body.connection_profile_id) await refreshConnectionProfiles(profile.id);
     updateControls(status);
   } catch (error) {
     toast(error.message, true);
@@ -1458,6 +1635,18 @@ function renderRoleAdvisor() {
     .join("");
 }
 
+function openRoleAdvisor(trigger) {
+  state.roleAdvisorTrigger = trigger || null;
+  $("#roleAdvisorModal").classList.remove("hidden");
+  setTimeout(() => $("#closeRoleAdvisor").focus(), 50);
+}
+
+function closeRoleAdvisor() {
+  $("#roleAdvisorModal").classList.add("hidden");
+  state.roleAdvisorTrigger?.focus();
+  state.roleAdvisorTrigger = null;
+}
+
 function renderConfigGuidance(section) {
   const container = $("#configGuidance");
   if (!container || !section) return;
@@ -1481,7 +1670,10 @@ function renderConfigGuidance(section) {
       <ul>
         <li><strong>Подходящо:</strong> ${escapeHtml(guidance.use)}</li>
         <li><strong>Внимание:</strong> ${escapeHtml(guidance.caution)}</li>
-      </ul>`;
+      </ul>
+      <button id="openRoleAdvisor" type="button" class="ghost config-help-action">
+        Сравни всички роли
+      </button>`;
     return;
   }
   const guidance = configSectionGuidance[section.name];
@@ -2054,13 +2246,31 @@ function createDirectConversation() {
 }
 
 document.querySelectorAll(".tab").forEach((tab) =>
-  tab.addEventListener("click", () => setTransport(tab.dataset.transport)),
+  tab.addEventListener("click", () => {
+    setTransport(tab.dataset.transport);
+    markConnectionProfileDirty();
+  }),
 );
 $("#connectForm").addEventListener("submit", connect);
 $("#disconnectButton").addEventListener("click", disconnect);
 $("#connectionToggle").addEventListener("click", () => {
   state.connectionExpanded = !state.connectionExpanded;
   if (state.status) updateControls(state.status);
+});
+$("#connectionProfile").addEventListener("change", applyConnectionProfile);
+$("#saveConnectionProfile").addEventListener("click", openConnectionProfileModal);
+$("#deleteConnectionProfile").addEventListener("click", deleteConnectionProfile);
+$("#cancelConnectionProfile").addEventListener("click", closeConnectionProfileModal);
+$("#confirmConnectionProfile").addEventListener("click", saveConnectionProfile);
+$("#connectionProfileName").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") saveConnectionProfile();
+});
+$("#connectionProfileModal").addEventListener("click", (event) => {
+  if (event.target === $("#connectionProfileModal")) closeConnectionProfileModal();
+});
+["#tcpHost", "#tcpPort", "#bleDevice"].forEach((selector) => {
+  $(selector).addEventListener("input", markConnectionProfileDirty);
+  $(selector).addEventListener("change", markConnectionProfileDirty);
 });
 $("#scanButton").addEventListener("click", scanBle);
 $("#pairButton").addEventListener("click", startPairing);
@@ -2125,6 +2335,14 @@ $("#copyPublicKey").addEventListener("click", async () => {
   }
 });
 $("#configForm").addEventListener("submit", saveConfig);
+$("#configForm").addEventListener("click", (event) => {
+  const trigger = event.target.closest("#openRoleAdvisor");
+  if (trigger) openRoleAdvisor(trigger);
+});
+$("#closeRoleAdvisor").addEventListener("click", closeRoleAdvisor);
+$("#roleAdvisorModal").addEventListener("click", (event) => {
+  if (event.target === $("#roleAdvisorModal")) closeRoleAdvisor();
+});
 $("#markRead").addEventListener("click", markMessagesRead);
 $("#markConversationRead").addEventListener("click", () => {
   if (!state.selectedConversation) return;
@@ -2138,9 +2356,22 @@ $("#clearEvents").addEventListener("click", () => {
 $("#closeInspector").addEventListener("click", closeInspector);
 $("#inspectorBackdrop").addEventListener("click", closeInspector);
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("#roleAdvisorModal").classList.contains("hidden")) {
+    closeRoleAdvisor();
+    return;
+  }
+  if (
+    event.key === "Escape" &&
+    !$("#connectionProfileModal").classList.contains("hidden")
+  ) {
+    closeConnectionProfileModal();
+    return;
+  }
   if (event.key === "Escape" && state.inspector) closeInspector();
 });
 
+organizeWorkspace();
+refreshConnectionProfiles();
 refreshStatus();
 pollEvents();
 renderRoleAdvisor();

@@ -7,6 +7,10 @@
 
 - [Implementation roadmap](ROADMAP.md) — подредени етапи и критерии за
   завършеност.
+- [Connection profiles](CONNECTION-PROFILES.md) — локално запазени TCP/BLE
+  endpoints и граници за бъдещия auto-reconnect.
+- [UI information architecture](UX-STRUCTURE.md) — правила за подреждане на
+  основни, вторични и бъдещи fleet секции.
 - [Android/Desktop parity backlog](ANDROID-PARITY-BACKLOG.md) — пълната опашка
   от сравнението с официалния клиент.
 - [Role profiles](ROLE-PROFILES.md) — кога се използват основните Meshtastic

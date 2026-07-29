@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from meshdesk.app import create_app
+from meshdesk.connection_profiles import ConnectionProfileStore
 
 
 class StubManager:
@@ -79,6 +80,67 @@ def test_tcp_connection_endpoint():
         )
     assert response.status_code == 202
     assert manager.calls[0] == ("tcp", "172.16.19.176", 4403)
+
+
+def test_connection_profile_crud_and_usage(tmp_path):
+    manager = StubManager()
+    store = ConnectionProfileStore(tmp_path / "connection-profiles.json")
+    with TestClient(create_app(manager, store)) as client:
+        created = client.post(
+            "/api/connection-profiles",
+            json={
+                "name": "Домашна база",
+                "transport": "tcp",
+                "host": "172.16.19.176",
+                "port": 4403,
+            },
+        )
+        profile = created.json()["profile"]
+        listing = client.get("/api/connection-profiles")
+        connected = client.post(
+            "/api/connect",
+            json={
+                "transport": "tcp",
+                "host": "172.16.19.176",
+                "port": 4403,
+                "connection_profile_id": profile["id"],
+            },
+        )
+        deleted = client.delete(f"/api/connection-profiles/{profile['id']}")
+
+    assert created.status_code == 201
+    assert listing.json()["profiles"][0]["name"] == "Домашна база"
+    assert connected.status_code == 202
+    assert store.path.exists()
+    assert deleted.status_code == 204
+    assert store.list() == []
+
+
+def test_saved_profile_cannot_be_attributed_to_another_endpoint(tmp_path):
+    manager = StubManager()
+    store = ConnectionProfileStore(tmp_path / "connection-profiles.json")
+    profile = store.create(
+        {
+            "name": "Домашна база",
+            "transport": "tcp",
+            "host": "172.16.19.176",
+            "port": 4403,
+        }
+    )
+
+    with TestClient(create_app(manager, store)) as client:
+        response = client.post(
+            "/api/connect",
+            json={
+                "transport": "tcp",
+                "host": "another-host.local",
+                "port": 4403,
+                "connection_profile_id": profile["id"],
+            },
+        )
+
+    assert response.status_code == 409
+    assert ("tcp", "another-host.local", 4403) not in manager.calls
 
 
 def test_send_message_endpoint():

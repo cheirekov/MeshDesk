@@ -41,6 +41,25 @@
           </div>
         </div>
 
+        <div class="connection-profile-toolbar">
+          <label class="grow">
+            Запазено устройство
+            <select id="connectionProfile">
+              <option value="">Ръчно въвеждане</option>
+            </select>
+          </label>
+          <div class="connection-profile-actions">
+            <button id="saveConnectionProfile" type="button" class="ghost">
+              Запази като профил
+            </button>
+            <button id="deleteConnectionProfile" type="button"
+              class="danger-outline hidden">Изтрий</button>
+          </div>
+        </div>
+        <p id="connectionProfileHint" class="connection-profile-hint">
+          Профилите пазят само адреса и транспорта локално — без PIN, PSK или ключове.
+        </p>
+
         <div class="tabs" role="tablist">
           <button class="tab active" data-transport="tcp">TCP / Wi-Fi</button>
           <button class="tab" data-transport="ble">Bluetooth LE</button>
@@ -205,39 +224,6 @@
           <button id="clearEvents" type="button" class="ghost">Изчисти</button>
         </div>
         <div id="events" class="events empty-state">Все още няма събития.</div>
-      </details>
-
-      <details id="guidancePanel" class="panel guidance-panel">
-        <summary>
-          <div>
-            <p class="eyebrow">ROLE ADVISOR</p>
-            <h2>Практически профили и препоръки</h2>
-          </div>
-          <span class="details-hint">Покажи</span>
-        </summary>
-        <div class="guidance-panel-body">
-          <div class="guidance-intro">
-            <div>
-              <strong>Изборът на role е инфраструктурно решение</strong>
-              <p>
-                CLIENT е правилният default за повечето устройства. Router ролите
-                не компенсират лошо разположение и могат да увеличат airtime и
-                collisions, ако се използват масово.
-              </p>
-            </div>
-            <span class="guidance-readonly">ИНФОРМАТИВНО · НЕ ПРИЛАГА ПРОМЕНИ</span>
-          </div>
-          <div id="roleAdvisorCards" class="role-advisor-grid"></div>
-          <div class="guidance-principles">
-            <strong>Общи безопасни основи</strong>
-            <ul>
-              <li>Region се задава според физическото местоположение и регулацията.</li>
-              <li>Всички участници трябва да използват съвместим modem preset и channel.</li>
-              <li>Hop limit 3 е разумна начална стойност; повече не винаги е по-добре.</li>
-              <li>Променяй първо един canary node и наблюдавай utilization и reachability.</li>
-            </ul>
-          </div>
-        </div>
       </details>
 
       <details id="adminPanel" class="panel admin-panel">
@@ -432,6 +418,59 @@
         <div class="modal-actions">
           <button id="cancelDirect" type="button" class="ghost">Откажи</button>
           <button id="openDirect" type="button" class="primary">Отвори разговор</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="connectionProfileModal" class="modal-backdrop hidden" role="dialog"
+      aria-modal="true" aria-labelledby="connectionProfileModalTitle">
+      <div class="modal-card">
+        <p class="eyebrow">CONNECTION PROFILE</p>
+        <h2 id="connectionProfileModalTitle">Запази връзката</h2>
+        <p id="connectionProfileSummary"></p>
+        <label>
+          Име на профила
+          <input id="connectionProfileName" maxlength="80" autocomplete="off"
+            placeholder="Например Домашна база">
+        </label>
+        <div class="modal-actions">
+          <button id="cancelConnectionProfile" type="button" class="ghost">Откажи</button>
+          <button id="confirmConnectionProfile" type="button" class="primary">Запази</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="roleAdvisorModal" class="modal-backdrop hidden" role="dialog"
+      aria-modal="true" aria-labelledby="roleAdvisorModalTitle">
+      <div class="modal-card role-advisor-modal-card">
+        <div class="modal-heading-row">
+          <div>
+            <p class="eyebrow">DEVICE ROLE</p>
+            <h2 id="roleAdvisorModalTitle">Сравнение на ролите</h2>
+          </div>
+          <button id="closeRoleAdvisor" type="button" class="icon-button"
+            aria-label="Затвори сравнението">×</button>
+        </div>
+        <div class="guidance-intro">
+          <div>
+            <strong>Изборът на role е инфраструктурно решение</strong>
+            <p>
+              CLIENT е правилният default за повечето устройства. Router ролите
+              не компенсират лошо разположение и могат да увеличат airtime и
+              collisions, ако се използват масово.
+            </p>
+          </div>
+          <span class="guidance-readonly">ИНФОРМАТИВНО · НЕ ПРИЛАГА ПРОМЕНИ</span>
+        </div>
+        <div id="roleAdvisorCards" class="role-advisor-grid"></div>
+        <div class="guidance-principles">
+          <strong>Общи безопасни основи</strong>
+          <ul>
+            <li>Region се задава според физическото местоположение и регулацията.</li>
+            <li>Всички участници трябва да използват съвместим preset и channel.</li>
+            <li>Hop limit 3 е разумна начална стойност; повече не винаги е по-добре.</li>
+            <li>Променяй първо един canary node и провери reachability.</li>
+          </ul>
         </div>
       </div>
     </div>

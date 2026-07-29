@@ -23,7 +23,8 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 
 - [ ] USB Serial транспорт без системно инсталиране на Python пакети.
 - [ ] mDNS discovery за `_meshtastic._tcp`.
-- [ ] Recent devices и именувани connection profiles.
+- [x] Именувани connection profiles с локално persistence и last-used metadata.
+- [ ] Recent-device identity след успешен Meshtastic handshake.
 - [ ] Контролирано auto-reconnect с backoff и видимо състояние.
 - [ ] Health/liveness проверка и ясна причина за прекъсване.
 

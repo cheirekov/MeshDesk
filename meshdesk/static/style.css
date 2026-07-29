@@ -63,7 +63,6 @@ main {
 }
 .connection-panel, .chat-panel, .nodes-panel { grid-column: 1 / -1; }
 .diagnostics-panel { grid-column: 1 / -1; }
-.guidance-panel { grid-column: 1 / -1; }
 .admin-panel { grid-column: 1 / -1; }
 .config-panel { grid-column: 1 / -1; }
 
@@ -192,6 +191,23 @@ button:disabled { opacity: 0.38; cursor: not-allowed; }
 .connection-compact-actions { display: flex; align-items: center; gap: 4px; }
 .connection-details { margin-top: 20px; }
 .connection-compact.hidden + .connection-details { margin-top: 0; }
+.connection-profile-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.connection-profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.connection-profile-hint {
+  margin-bottom: 15px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
 
 label {
   display: flex;
@@ -252,6 +268,19 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   border-radius: 16px;
   background: linear-gradient(145deg, #12241e, #091612);
   box-shadow: 0 24px 80px #000c;
+}
+.modal-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.modal-heading-row h2 { margin-bottom: 0; }
+.role-advisor-modal-card {
+  width: min(960px, 100%);
+  max-height: min(88vh, 880px);
+  overflow: auto;
 }
 .modal-card h2 { margin-bottom: 8px; font-size: 1.35rem; }
 .modal-card > p:not(.eyebrow) {
@@ -814,7 +843,6 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 
 .diagnostics-panel { align-self: start; }
 .diagnostics-panel summary,
-.guidance-panel summary,
 .admin-panel summary {
   display: flex;
   align-items: center;
@@ -823,7 +851,6 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   list-style: none;
 }
 .diagnostics-panel summary::-webkit-details-marker,
-.guidance-panel summary::-webkit-details-marker,
 .admin-panel summary::-webkit-details-marker { display: none; }
 .details-hint { color: var(--muted); font-size: 0.7rem; }
 .diagnostics-panel[open] .details-hint { font-size: 0; }
@@ -836,12 +863,6 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   content: "Скрий";
   font-size: 0.7rem;
 }
-.guidance-panel[open] .details-hint { font-size: 0; }
-.guidance-panel[open] .details-hint::after {
-  content: "Скрий";
-  font-size: 0.7rem;
-}
-.guidance-panel-body { margin-top: 20px; }
 .guidance-intro {
   display: flex;
   align-items: flex-start;
@@ -1028,6 +1049,7 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   font-size: 0.67rem;
   line-height: 1.55;
 }
+.config-help-action { margin-top: 10px; }
 .config-summary {
   display: flex;
   align-items: center;
@@ -1181,7 +1203,7 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 @media (max-width: 860px) {
   main { grid-template-columns: 1fr; }
   .connection-panel, .chat-panel, .nodes-panel, .diagnostics-panel,
-  .guidance-panel, .admin-panel {
+  .admin-panel {
     grid-column: 1;
     grid-row: auto;
   }
@@ -1202,6 +1224,8 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   .panel { padding: 16px; }
   .field-row { align-items: stretch; flex-direction: column; }
   .port { width: 100%; }
+  .connection-profile-toolbar { align-items: stretch; flex-direction: column; }
+  .connection-profile-actions { flex-wrap: wrap; }
   .connection-compact { align-items: flex-start; }
   .connection-compact-actions { flex-direction: column; align-items: stretch; }
   .chat-layout {

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from meshdesk import __version__
+from meshdesk.connection_profiles import ConnectionProfileStore
 from meshdesk.manager import MeshtasticManager
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -17,6 +18,15 @@ STATIC_DIR = Path(__file__).parent / "static"
 class ConnectRequest(BaseModel):
     transport: Literal["tcp", "ble"]
     host: str = "172.16.19.176"
+    port: int = Field(default=4403, ge=1, le=65535)
+    address: str = ""
+    connection_profile_id: str | None = None
+
+
+class ConnectionProfileRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    transport: Literal["tcp", "ble"]
+    host: str = ""
     port: int = Field(default=4403, ge=1, le=65535)
     address: str = ""
 
@@ -93,8 +103,12 @@ class HistoryReplayRequest(BaseModel):
     max_messages: int | None = Field(default=None, ge=1, le=500)
 
 
-def create_app(manager: MeshtasticManager | None = None) -> FastAPI:
+def create_app(
+    manager: MeshtasticManager | None = None,
+    connection_profiles: ConnectionProfileStore | None = None,
+) -> FastAPI:
     radio = manager or MeshtasticManager()
+    profiles = connection_profiles or ConnectionProfileStore()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -138,14 +152,74 @@ def create_app(manager: MeshtasticManager | None = None) -> FastAPI:
     def status() -> dict:
         return radio.status()
 
+    @api.get("/api/connection-profiles")
+    def list_connection_profiles() -> dict:
+        try:
+            return {"profiles": profiles.list()}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @api.post("/api/connection-profiles", status_code=201)
+    def create_connection_profile(request: ConnectionProfileRequest) -> dict:
+        try:
+            return {"profile": profiles.create(request.model_dump())}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api.put("/api/connection-profiles/{profile_id}")
+    def update_connection_profile(
+        profile_id: str,
+        request: ConnectionProfileRequest,
+    ) -> dict:
+        try:
+            return {"profile": profiles.update(profile_id, request.model_dump())}
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Connection profile not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api.delete("/api/connection-profiles/{profile_id}", status_code=204)
+    def delete_connection_profile(profile_id: str) -> None:
+        try:
+            profiles.delete(profile_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Connection profile not found") from exc
+
     @api.post("/api/connect", status_code=202)
     def connect(request: ConnectRequest) -> dict:
         try:
+            if request.connection_profile_id:
+                profile = profiles.get(request.connection_profile_id)
+                endpoint_matches = (
+                    profile["transport"] == request.transport
+                    and (
+                        (
+                            request.transport == "tcp"
+                            and profile["host"] == request.host.strip()
+                            and profile["port"] == request.port
+                        )
+                        or (
+                            request.transport == "ble"
+                            and profile["address"] == request.address.strip()
+                        )
+                    )
+                )
+                if not endpoint_matches:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Connection fields differ from the saved profile",
+                    )
             if request.transport == "tcp":
                 radio.connect_tcp(request.host, request.port)
             else:
                 radio.connect_ble(request.address)
+            if request.connection_profile_id:
+                profiles.mark_used(request.connection_profile_id)
             return radio.status()
+        except HTTPException:
+            raise
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Connection profile not found") from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
