@@ -109,7 +109,15 @@ Node Inspector с пълния NodeDB запис, telemetry, позиция, rad
 
 В Node Inspector може да се избере чия NodeDB се променя: на локалното gateway
 радио или на разрешен remote-admin node. Remote операцията изисква PKI достъп и
-MeshDesk изчаква ACK/NAK, преди да я отчете като успешна.
+MeshDesk изчаква ACK/NAK, преди да я отчете като успешна. Локалните флагове не
+описват NodeDB на избраното remote радио, затова при Remote избор текущото
+състояние е означено като неизвестно и са налични отделни **Добави**,
+**Премахни**, **Игнорирай** и **Спри** действия. ACK означава „командата е
+приета“, а не read-back потвърждение; подробният резултат остава
+`непроверено`. При stale admin session MeshDesk подновява ключа и повтаря
+обратимата команда веднъж. Собственият node е означен отделно и няма
+favorite/ignore действия. Виж
+[Remote NodeDB favorite/ignore](docs/REMOTE-NODEDB.md).
 
 До всяко чат съобщение има ненатрапчив бутон **Детайли**. Packet Inspector
 показва from/to, channel, packet/request/reply ID, RSSI/SNR на последния радио

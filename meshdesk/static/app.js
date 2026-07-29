@@ -1289,6 +1289,22 @@ function renderNodes(nodes) {
           : node.hops_away != null
             ? `<span class="node-badge">${escapeHtml(node.hops_away)} hops</span>`
             : '<span class="node-badge">radio</span>';
+      const preferenceControls = node.is_self
+        ? `<span class="self-node-preference"
+            title="Собственото радио не може да бъде favorite/ignored в собствената си NodeDB.">
+            собствено радио</span>`
+        : `<button type="button"
+              class="node-preference ghost${node.is_favorite ? " active" : ""}"
+              data-action="${node.is_favorite ? "unfavorite" : "favorite"}"
+              data-node="${escapeHtml(node.id)}"
+              title="${node.is_favorite ? "Премахни от любими" : "Добави в любими"}"
+              aria-label="${node.is_favorite ? "Премахни от любими" : "Добави в любими"}">★</button>
+            <button type="button"
+              class="node-preference ignored ghost${node.is_ignored ? " active" : ""}"
+              data-action="${node.is_ignored ? "unignore" : "ignore"}"
+              data-node="${escapeHtml(node.id)}"
+              title="${node.is_ignored ? "Спри игнорирането" : "Игнорирай възела"}"
+              aria-label="${node.is_ignored ? "Спри игнорирането" : "Игнорирай възела"}">⊘</button>`;
       return `
         <article class="node-card${node.is_ignored ? " node-ignored" : ""}">
           <div class="node-avatar">${escapeHtml(node.short_name.slice(0, 4))}</div>
@@ -1313,18 +1329,7 @@ function renderNodes(nodes) {
             )}</strong></div>
           </div>
           <div class="node-actions">
-            <button type="button"
-              class="node-preference ghost${node.is_favorite ? " active" : ""}"
-              data-action="${node.is_favorite ? "unfavorite" : "favorite"}"
-              data-node="${escapeHtml(node.id)}"
-              title="${node.is_favorite ? "Премахни от любими" : "Добави в любими"}"
-              aria-label="${node.is_favorite ? "Премахни от любими" : "Добави в любими"}">★</button>
-            <button type="button"
-              class="node-preference ignored ghost${node.is_ignored ? " active" : ""}"
-              data-action="${node.is_ignored ? "unignore" : "ignore"}"
-              data-node="${escapeHtml(node.id)}"
-              title="${node.is_ignored ? "Спри игнорирането" : "Игнорирай възела"}"
-              aria-label="${node.is_ignored ? "Спри игнорирането" : "Игнорирай възела"}">⊘</button>
+            ${preferenceControls}
             <button type="button" class="node-message ghost" data-node="${escapeHtml(
               node.id,
             )}" ${node.is_messageable ? "" : "disabled"}>Съобщение</button>
@@ -1474,8 +1479,45 @@ function operationResultHtml(event) {
     }</p>`;
   } else if (event.operation === "history_replay") {
     body = "<p>Радиото прие заявката за синхронизация.</p>";
+  } else if (
+    ["favorite", "unfavorite", "ignore", "unignore"].includes(event.operation)
+  ) {
+    const managed = nodeForId(event.managed_node);
+    const managedLabel =
+      managed?.long_name || event.managed_node || state.status?.profile_name || "локалното радио";
+    const acknowledgment = event.result?.acknowledgment || "неизвестен";
+    body = event.remote
+      ? `<p>Командата е приета от NodeDB на ${escapeHtml(managedLabel)}.</p>
+        <div class="operation-meta">
+          <span><small>Транспортен резултат</small><strong>${escapeHtml(
+            acknowledgment.toUpperCase(),
+          )}</strong></span>
+          <span><small>Desired state</small><strong>непроверено</strong></span>
+          ${
+            event.result?.session_refreshed
+              ? "<span><small>Admin session</small><strong>подновена</strong></span>"
+              : ""
+          }
+        </div>`
+      : `<p>NodeDB на локалното радио е обновена.</p>
+        <div class="operation-meta">
+          <span><small>Състояние</small><strong>локално приложено</strong></span>
+        </div>`;
   } else {
     body = "<p>Node database е обновена.</p>";
+  }
+  if (
+    event.kind === "operation_result" &&
+    !event.success &&
+    ["favorite", "unfavorite", "ignore", "unignore"].includes(event.operation)
+  ) {
+    const acknowledgment = event.result?.acknowledgment || "error";
+    body += `<div class="operation-meta">
+      <span><small>Резултат</small><strong>${escapeHtml(
+        acknowledgment.toUpperCase(),
+      )}</strong></span>
+      <span><small>Desired state</small><strong>непроменено/неизвестно</strong></span>
+    </div>`;
   }
   return `<article class="operation-card ${stateClass}">
     <div class="operation-heading">
@@ -1500,7 +1542,7 @@ function closeInspector() {
 }
 
 function openNodeInspector(nodeId) {
-  state.inspector = { type: "node", nodeId };
+  state.inspector = { type: "node", nodeId, managedNodeId: "" };
   renderInspector();
   showInspector();
 }
@@ -1516,6 +1558,66 @@ function nodeOperations(nodeId) {
     .reverse();
 }
 
+function nodeDbActionControls(node, managedNodeId = "") {
+  const targetsItself =
+    (!managedNodeId && node.is_self) ||
+    (managedNodeId && managedNodeId.toLowerCase() === node.id.toLowerCase());
+  if (targetsItself) {
+    return `
+      <div class="nodedb-context self">
+        <strong>Собствен възел</strong>
+        <span>Favorite/ignore не се прилага за радиото в собствената му NodeDB.
+          То не може да бъде изхвърлено или игнорирано като remote peer.</span>
+      </div>`;
+  }
+  if (!managedNodeId) {
+    return `
+      <div class="nodedb-context known">
+        <strong>Локално състояние</strong>
+        <span>Любим: ${node.is_favorite ? "да" : "не"} · Игнориран: ${
+          node.is_ignored ? "да" : "не"
+        }</span>
+      </div>
+      <div class="inspector-actions">
+        <button type="button" class="ghost inspector-action"
+          data-action="${node.is_favorite ? "unfavorite" : "favorite"}">${
+            node.is_favorite ? "Премахни от любими" : "Добави в любими"
+          }</button>
+        <button type="button" class="ghost inspector-action"
+          data-action="${node.is_ignored ? "unignore" : "ignore"}">${
+            node.is_ignored ? "Спри игнорирането" : "Игнорирай възела"
+          }</button>
+      </div>`;
+  }
+  const managed = nodeForId(managedNodeId);
+  return `
+    <div class="nodedb-context unknown">
+      <strong>Remote състояние: неизвестно</strong>
+      <span>Meshtastic admin протоколът не позволява прочитане на NodeDB на
+        ${escapeHtml(managed?.long_name || managedNodeId)}.</span>
+    </div>
+    <div class="remote-nodedb-actions">
+      <div>
+        <span>Любими</span>
+        <div class="inspector-actions">
+          <button type="button" class="ghost inspector-action"
+            data-action="favorite">Добави</button>
+          <button type="button" class="ghost inspector-action"
+            data-action="unfavorite">Премахни</button>
+        </div>
+      </div>
+      <div>
+        <span>Игнориране</span>
+        <div class="inspector-actions">
+          <button type="button" class="ghost inspector-action"
+            data-action="ignore">Игнорирай</button>
+          <button type="button" class="ghost inspector-action"
+            data-action="unignore">Спри</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderNodeInspector(node) {
   $("#inspectorEyebrow").textContent = "NODE INSPECTOR";
   $("#inspectorTitle").textContent = node.long_name;
@@ -1529,13 +1631,16 @@ function renderNodeInspector(node) {
       : Number(node.hops_away) === 0
         ? "директен peer"
         : `${node.hops_away} radio hops`;
+  const managedNodeId = state.inspector?.managedNodeId || "";
   const managedNodeOptions = [
     `<option value="">Локално: ${escapeHtml(
       state.status?.profile_name || state.profileId || "радио",
     )}</option>`,
     ...state.nodes.map(
       (candidate) =>
-        `<option value="${escapeHtml(candidate.id)}">Remote: ${escapeHtml(
+        `<option value="${escapeHtml(candidate.id)}" ${
+          candidate.id.toLowerCase() === managedNodeId.toLowerCase() ? "selected" : ""
+        }>Remote: ${escapeHtml(
           candidate.long_name,
         )} · ${escapeHtml(candidate.id)}</option>`,
     ),
@@ -1576,18 +1681,12 @@ function renderNodeInspector(node) {
         Промени NodeDB на
         <select id="inspectorNodeDbTarget">${managedNodeOptions}</select>
       </label>
-      <div class="inspector-actions">
-        <button type="button" class="ghost inspector-action"
-          data-action="${node.is_favorite ? "unfavorite" : "favorite"}">${
-            node.is_favorite ? "Премахни от любими" : "Добави в любими"
-          }</button>
-        <button type="button" class="ghost inspector-action"
-          data-action="${node.is_ignored ? "unignore" : "ignore"}">${
-            node.is_ignored ? "Спри игнорирането" : "Игнорирай възела"
-          }</button>
+      <div id="inspectorNodeDbActions">
+        ${nodeDbActionControls(node, managedNodeId)}
       </div>
-      <p class="inspector-note">При Remote избор заявката минава през PKI admin.
-        Игнорирането може да спре обработката на пакети от този възел от избраното радио.</p>
+      <p class="inspector-note">Remote командите минават през PKI admin. ACK
+        потвърждава командата, но не означава, че MeshDesk може да прочете
+        последващото remote NodeDB състояние.</p>
     </section>
 
     <section class="inspector-section">
@@ -1646,22 +1745,34 @@ function renderNodeInspector(node) {
       <pre>${escapeHtml(JSON.stringify(node.raw || node, null, 2))}</pre>
     </details>`;
 
-  $("#inspectorContent").querySelectorAll(".inspector-action").forEach((button) => {
-    button.addEventListener("click", () => {
-      const telemetryType =
-        button.dataset.action === "telemetry"
-          ? $("#inspectorTelemetryType").value
-          : "device";
-      const isNodeDbAction = ["favorite", "unfavorite", "ignore", "unignore"].includes(
-        button.dataset.action,
-      );
-      requestNodeAction(
-        node.id,
-        button.dataset.action,
-        telemetryType,
-        isNodeDbAction ? $("#inspectorNodeDbTarget").value : null,
-      );
+  const bindActionButtons = (root) => {
+    root.querySelectorAll(".inspector-action").forEach((button) => {
+      button.addEventListener("click", () => {
+        const telemetryType =
+          button.dataset.action === "telemetry"
+            ? $("#inspectorTelemetryType").value
+            : "device";
+        const isNodeDbAction = ["favorite", "unfavorite", "ignore", "unignore"].includes(
+          button.dataset.action,
+        );
+        requestNodeAction(
+          node.id,
+          button.dataset.action,
+          telemetryType,
+          isNodeDbAction ? $("#inspectorNodeDbTarget").value : null,
+        );
+      });
     });
+  };
+  bindActionButtons($("#inspectorContent"));
+  $("#inspectorNodeDbTarget").addEventListener("change", () => {
+    const selectedTarget = $("#inspectorNodeDbTarget").value;
+    if (state.inspector?.type === "node") {
+      state.inspector.managedNodeId = selectedTarget;
+    }
+    const actions = $("#inspectorNodeDbActions");
+    actions.innerHTML = nodeDbActionControls(node, selectedTarget);
+    bindActionButtons(actions);
   });
   $(".inspector-message").addEventListener("click", () => {
     const key = `direct:${node.id}`;
@@ -1835,7 +1946,28 @@ async function requestNodeAction(
   telemetryType = "device",
   managedNodeId = null,
 ) {
-  if (
+  const preferenceAction = ["favorite", "unfavorite", "ignore", "unignore"].includes(
+    action,
+  );
+  if (managedNodeId && preferenceAction) {
+    const managed = nodeForId(managedNodeId);
+    const subject = nodeForId(nodeId);
+    const instruction = {
+      favorite: "добави в любими",
+      unfavorite: "премахни от любими",
+      ignore: "игнорирай",
+      unignore: "спри игнорирането на",
+    }[action];
+    if (
+      !confirm(
+        `NodeDB на ${managed?.long_name || managedNodeId}: ${instruction} ` +
+          `${subject?.long_name || nodeId} (${nodeId})? ` +
+          "Текущото remote състояние не може да бъде прочетено.",
+      )
+    ) {
+      return;
+    }
+  } else if (
     action === "ignore" &&
     !confirm("Радиото може да спре да обработва пакети от този възел. Да продължа ли?")
   ) {
@@ -1864,9 +1996,15 @@ async function requestNodeAction(
       }
     }
     toast(
-      `${operationLabel({ operation: action, telemetry_type: telemetryType })} ${
-        managedNodeId ? "е изпратено към remote NodeDB" : "е приложено"
-      }`,
+      managedNodeId && preferenceAction
+        ? `${operationLabel({
+            operation: action,
+            telemetry_type: telemetryType,
+          })}: remote командата получи ACK; състоянието остава неизвестно`
+        : `${operationLabel({
+            operation: action,
+            telemetry_type: telemetryType,
+          })} е приложено`,
     );
   } catch (error) {
     toast(error.message, true);

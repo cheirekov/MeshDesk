@@ -48,6 +48,11 @@ def test_saved_connection_profiles_are_available_in_connection_panel() -> None:
     assert "refreshConnectionProfiles()" in script.text
     assert "verifySelectedConnectionProfile(status)" in script.text
     assert "updateConnectionHealth(status)" in script.text
+    assert "Remote състояние: неизвестно" in script.text
+    assert 'data-action="favorite">Добави' in script.text
+    assert 'data-action="unfavorite">Премахни' in script.text
+    assert "собствено радио" in script.text
+    assert "Admin session</small><strong>подновена" in script.text
     assert "discoverTcpDevices" in script.text
     assert "matchingProfileForDiscoveredDevice" in script.text
 

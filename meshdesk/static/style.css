@@ -841,6 +841,13 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   background: #351d1d;
   color: #ff9e9e;
 }
+.self-node-preference {
+  padding: 5px 8px;
+  border: 1px solid #354740;
+  border-radius: 999px;
+  color: var(--muted);
+  font: 650 0.58rem ui-monospace, monospace;
+}
 
 .inspector-backdrop {
   position: fixed;
@@ -936,6 +943,50 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   margin-bottom: 10px;
 }
 .inspector-actions button { padding: 8px 10px; font-size: 0.7rem; }
+.nodedb-context {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+  padding: 9px 10px;
+  border: 1px solid #355044;
+  border-radius: 8px;
+  background: rgba(20, 43, 34, 0.5);
+}
+.nodedb-context.unknown {
+  border-color: #66512b;
+  background: rgba(72, 53, 17, 0.25);
+}
+.nodedb-context.self {
+  border-color: #3d4b54;
+  background: rgba(36, 48, 55, 0.35);
+}
+.nodedb-context strong { flex: 0 0 auto; font-size: 0.68rem; }
+.nodedb-context span {
+  color: var(--muted);
+  font-size: 0.63rem;
+  line-height: 1.45;
+  text-align: right;
+}
+.remote-nodedb-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 10px;
+}
+.remote-nodedb-actions > div {
+  padding: 9px 10px;
+  border: 1px solid #2a4038;
+  border-radius: 8px;
+  background: #0d1c18;
+}
+.remote-nodedb-actions > div > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 0.61rem;
+}
 .telemetry-request {
   display: flex;
   flex: 1 1 280px;
@@ -961,6 +1012,23 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 .operation-heading strong { font-size: 0.74rem; }
 .operation-heading time { color: var(--muted); font: 0.6rem ui-monospace, monospace; }
 .operation-card p { margin-top: 6px; color: var(--muted); font-size: 0.67rem; }
+.operation-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.operation-meta span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 1px solid #30473f;
+  border-radius: 6px;
+  background: #0b1713;
+}
+.operation-meta small { color: var(--muted); font-size: 0.57rem; }
+.operation-meta strong { font: 700 0.59rem ui-monospace, monospace; }
 .route-path { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
 .route-node {
   display: inline-flex;
@@ -1451,6 +1519,9 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   .inspector-header { padding: 17px; }
   .inspector-content { padding: 14px 14px 30px; }
   .inspector-grid { grid-template-columns: 1fr; }
+  .nodedb-context { flex-direction: column; }
+  .nodedb-context span { text-align: left; }
+  .remote-nodedb-actions { grid-template-columns: 1fr; }
   .config-toolbar { align-items: stretch; flex-direction: column; }
   .remote-config-controls { grid-template-columns: 1fr; }
   .public-key-row { grid-column: 1; flex-wrap: wrap; }

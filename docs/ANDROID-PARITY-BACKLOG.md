@@ -64,6 +64,7 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 | NODE-07 | P1 | PKI lock/mismatch/trust indicators | public-key history | queued |
 | NODE-08 | P2 | Device metadata, firmware и capabilities | metadata request/cache | queued |
 | NODE-09 | P2 | Hardware/product links | maintained upstream catalog | queued |
+| NODE-10 | P1 | Explicit remote favorite/ignore с ACK/NAK/timeout | PKI admin | **completed** |
 
 ## Telemetry, diagnostics and topology
 

@@ -5,6 +5,7 @@ import threading
 from datetime import UTC, datetime
 
 from meshtastic.protobuf import channel_pb2, localonly_pb2, storeforward_pb2
+from meshtastic.util import to_node_num
 
 from meshdesk.history import EncryptedHistory
 from meshdesk.manager import MeshtasticManager
@@ -12,29 +13,58 @@ from meshdesk.manager import MeshtasticManager
 
 class FakeLocalNode:
     def __init__(self) -> None:
+        self.nodeNum = 0x87654321
+        self.iface = None
         self.localConfig = localonly_pb2.LocalConfig()
         self.moduleConfig = localonly_pb2.LocalModuleConfig()
         self.channels = []
         self.written = []
         self.owner_updates = []
+        self.admin_response = None
+        self.admin_responses = []
+        self.ack_callback_names = []
+        self.session_refreshes = 0
+
+    def onAckNak(self, _packet):
+        pass
+
+    def _respond_to_admin(self):
+        response = (
+            self.admin_responses.pop(0)
+            if self.admin_responses
+            else self.admin_response
+        )
+        if response is not None:
+            self.ack_callback_names.append(self.onAckNak.__name__)
+            self.onAckNak(response)
+
+    def ensureSessionKey(self):
+        self.session_refreshes += 1
+        self.iface._getOrCreateByNum(to_node_num(self.nodeNum))[
+            "adminSessionPassKey"
+        ] = b"fresh"
 
     def writeConfig(self, section):
         self.written.append(section)
 
     def setFavorite(self, node_id):
         self.written.append(("favorite", node_id))
+        self._respond_to_admin()
         return {"id": 85}
 
     def removeFavorite(self, node_id):
         self.written.append(("unfavorite", node_id))
+        self._respond_to_admin()
         return {"id": 86}
 
     def setIgnored(self, node_id):
         self.written.append(("ignore", node_id))
+        self._respond_to_admin()
         return {"id": 87}
 
     def removeIgnored(self, node_id):
         self.written.append(("unignore", node_id))
+        self._respond_to_admin()
         return {"id": 88}
 
     def setOwner(self, **values):
@@ -61,6 +91,7 @@ class FakeLocalNode:
 class FakeInterface:
     def __init__(self) -> None:
         self.localNode = FakeLocalNode()
+        self.localNode.iface = self
         self.nodes = {
             "!12345678": {
                 "num": 0x12345678,
@@ -81,7 +112,13 @@ class FakeInterface:
         self.sent = []
         self.sent_data = []
         self.remote_node = FakeLocalNode()
+        self.remote_node.iface = self
+        self._node_records_by_num = {
+            self.remote_node.nodeNum: {"adminSessionPassKey": b"stale"}
+        }
+        self.get_node_requests = []
         self.ack_waits = 0
+        self.ack_wait_error = None
 
     def getMyNodeInfo(self):
         return next(iter(self.nodes.values()))
@@ -95,10 +132,17 @@ class FakeInterface:
         return {"id": 84}
 
     def getNode(self, node_id, requestChannels=False, timeout=45):
+        self.get_node_requests.append(node_id)
+        self.remote_node.nodeNum = node_id
         return self.remote_node
+
+    def _getOrCreateByNum(self, node_num):
+        return self._node_records_by_num.setdefault(node_num, {})
 
     def waitForAckNak(self):
         self.ack_waits += 1
+        if self.ack_wait_error:
+            raise self.ack_wait_error
 
     def close(self):
         return None
@@ -109,6 +153,7 @@ def connected_manager() -> tuple[MeshtasticManager, FakeInterface]:
     interface = FakeInterface()
     manager._interface = interface  # noqa: SLF001 - deliberate unit-test seam
     manager._state = "connected"  # noqa: SLF001
+    manager._profile_id = "!87654321"  # noqa: SLF001
     return manager, interface
 
 
@@ -259,7 +304,41 @@ def test_node_management_action_updates_local_nodedb():
     packet = manager.request_node_action("!12345678", "favorite")
     assert packet == {"id": 85}
     assert interface.localNode.written == [("favorite", "!12345678")]
+    assert manager.nodes()[0]["is_favorite"] is True
+
+    manager.request_node_action("!12345678", "unfavorite")
+    assert manager.nodes()[0]["is_favorite"] is False
+    manager.request_node_action("!12345678", "ignore")
+    assert manager.nodes()[0]["is_ignored"] is True
+    manager.request_node_action("!12345678", "unignore")
+    assert manager.nodes()[0]["is_ignored"] is False
     assert manager.events()[0]["operation"] == "favorite"
+
+
+def test_managed_radio_is_not_exposed_as_its_own_preference_target():
+    manager, interface = connected_manager()
+    interface.nodes["!87654321"] = {
+        "num": 0x87654321,
+        "user": {
+            "id": "!87654321",
+            "longName": "Gateway",
+            "shortName": "GATE",
+        },
+        "isFavorite": True,
+        "isIgnored": True,
+    }
+
+    self_node = next(node for node in manager.nodes() if node["id"] == "!87654321")
+    assert self_node["is_self"] is True
+    assert self_node["is_favorite"] is False
+    assert self_node["is_ignored"] is False
+
+    try:
+        manager.request_node_action("!87654321", "favorite")
+    except ValueError as exc:
+        assert "managed radio itself" in str(exc)
+    else:
+        raise AssertionError("Expected a self-preference operation to be rejected")
 
 
 def test_traceroute_response_is_projected_as_hops_with_snr():
@@ -411,6 +490,111 @@ def test_remote_nodedb_preference_uses_managed_remote_node():
     assert interface.localNode.written == []
     assert interface.remote_node.written == [("ignore", "!12345678")]
     assert interface.ack_waits == 1
+    result = manager.events()[-1]
+    assert result["result"]["state_verified"] is False
+    assert result["result"]["remote_state_readable"] is False
+
+
+def test_remote_nodedb_preference_distinguishes_ack_and_nak():
+    manager, interface = connected_manager()
+    interface.remote_node.admin_response = {
+        "from": 0x87654321,
+        "decoded": {
+            "portnum": "ROUTING_APP",
+            "routing": {"errorReason": "NONE"},
+        },
+    }
+
+    manager.request_node_action(
+        "!12345678",
+        "favorite",
+        managed_node_id="!87654321",
+    )
+    ack = manager.events()[-1]
+    assert ack["success"] is True
+    assert ack["result"]["acknowledgment"] == "ack"
+    assert interface.remote_node.ack_callback_names == ["onAckNak"]
+    assert "onAckNak" not in interface.remote_node.__dict__
+
+    interface.remote_node.admin_response = {
+        "from": 0x87654321,
+        "decoded": {
+            "portnum": "ROUTING_APP",
+            "routing": {"errorReason": "NOT_AUTHORIZED"},
+        },
+    }
+    try:
+        manager.request_node_action(
+            "!12345678",
+            "unfavorite",
+            managed_node_id="!87654321",
+        )
+    except RuntimeError as exc:
+        assert "NOT_AUTHORIZED" in str(exc)
+    else:
+        raise AssertionError("Expected remote NAK to reject the operation")
+    nak = manager.events()[-1]
+    assert nak["success"] is False
+    assert nak["error"] == "NOT_AUTHORIZED"
+    assert nak["result"]["acknowledgment"] == "nak"
+
+
+def test_remote_nodedb_preference_refreshes_a_bad_admin_session_once():
+    manager, interface = connected_manager()
+    interface.remote_node.admin_responses = [
+        {
+            "from": 0x87654321,
+            "decoded": {
+                "portnum": "ROUTING_APP",
+                "routing": {"errorReason": "ADMIN_BAD_SESSION_KEY"},
+            },
+        },
+        {
+            "from": 0x87654321,
+            "decoded": {
+                "portnum": "ROUTING_APP",
+                "routing": {"errorReason": "NONE"},
+            },
+        },
+    ]
+
+    manager.request_node_action(
+        "!12345678",
+        "favorite",
+        managed_node_id="!87654321",
+    )
+
+    assert interface.remote_node.written == [
+        ("favorite", "!12345678"),
+        ("favorite", "!12345678"),
+    ]
+    assert interface.get_node_requests == [0x87654321]
+    assert interface.remote_node.session_refreshes == 1
+    assert interface._getOrCreateByNum(0x87654321)["adminSessionPassKey"] == b"fresh"
+    result = manager.events()[-1]
+    assert result["success"] is True
+    assert result["result"]["acknowledgment"] == "ack"
+    assert result["result"]["session_refreshed"] is True
+    assert result["result"]["attempts"] == 2
+
+
+def test_remote_nodedb_preference_records_ack_timeout():
+    manager, interface = connected_manager()
+    interface.ack_wait_error = RuntimeError("Timed out waiting for an acknowledgment")
+
+    try:
+        manager.request_node_action(
+            "!12345678",
+            "ignore",
+            managed_node_id="!87654321",
+        )
+    except RuntimeError as exc:
+        assert "Timed out" in str(exc)
+    else:
+        raise AssertionError("Expected remote ACK timeout")
+    result = manager.events()[-1]
+    assert result["success"] is False
+    assert result["result"]["acknowledgment"] == "timeout"
 
 
 def test_history_replay_matches_android_client_request():

@@ -31,6 +31,20 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 Критерий: TCP, BLE и Serial използват еднакъв lifecycle и не губят handshake
 пакети или история.
 
+## M1.5 — Remote NodeDB safety
+
+- [x] Ясно разделяне на subject node и managed NodeDB.
+- [x] Известно локално срещу неизвестно remote favorite/ignore състояние.
+- [x] Отделни explicit add/remove и ignore/unignore remote действия.
+- [x] Надеждно различаване на ACK, NAK и timeout.
+- [x] Еднократно session refresh/retry при `ADMIN_BAD_SESSION_KEY`.
+- [x] Stable local cache projection и защита от self-preference операции.
+- [x] Audit резултат с `accepted, unverified` при непрочитаем remote state.
+- [ ] Capability/firmware preflight преди изпращане.
+
+Този milestone е поставен пред auto-reconnect и mass operations, защото
+еднозначното адресиране и честният result model са техни задължителни основи.
+
 ## M2 — Channel Manager
 
 - [ ] Списък на всички channel slots, включително disabled.

@@ -19,6 +19,7 @@ from meshtastic.protobuf import (
     storeforward_pb2,
     telemetry_pb2,
 )
+from meshtastic.util import to_node_num
 from pubsub import pub
 
 from meshdesk.history import EncryptedHistory
@@ -511,11 +512,80 @@ class MeshtasticManager:
         with self._lock:
             remote = self._remote_nodes.get(node_id)
         if remote is None:
-            remote = interface.getNode(node_id, requestChannels=False, timeout=45)
+            remote = interface.getNode(
+                int(node_id[1:], 16),
+                requestChannels=False,
+                timeout=45,
+            )
             with self._lock:
                 if interface is self._interface:
                     self._remote_nodes[node_id] = remote
         return remote
+
+    def _local_node_id(self, interface: Any) -> str | None:
+        with self._lock:
+            profile_id = self._profile_id
+        if profile_id:
+            return profile_id.lower()
+        with contextlib.suppress(Exception):
+            info = _safe(interface.getMyNodeInfo())
+            user = info.get("user") or {}
+            node_id = user.get("id")
+            if node_id:
+                return str(node_id).lower()
+        return None
+
+    @staticmethod
+    def _admin_response_error(packet: dict[str, Any] | None) -> str | int | None:
+        decoded = (packet or {}).get("decoded") or {}
+        routing = decoded.get("routing") or {}
+        return routing.get("errorReason") or routing.get("error_reason")
+
+    @staticmethod
+    def _clear_admin_session_key(interface: Any, managed_node: Any) -> None:
+        node_num = getattr(managed_node, "nodeNum", None)
+        if node_num is None or not hasattr(interface, "_getOrCreateByNum"):
+            raise RuntimeError("Cannot refresh the remote admin session key")
+        normalized_node_num = (
+            int(node_num[1:], 16)
+            if isinstance(node_num, str) and node_num.startswith("!")
+            else to_node_num(node_num)
+        )
+        record = interface._getOrCreateByNum(normalized_node_num)
+        record.pop("adminSessionPassKey", None)
+
+    def _update_cached_node_preference(
+        self,
+        interface: Any,
+        node_id: str,
+        action: str,
+    ) -> None:
+        field, value = {
+            "favorite": ("isFavorite", True),
+            "unfavorite": ("isFavorite", False),
+            "ignore": ("isIgnored", True),
+            "unignore": ("isIgnored", False),
+        }[action]
+        snake_field = "is_favorite" if field == "isFavorite" else "is_ignored"
+        with self._lock:
+            if interface is not self._interface:
+                return
+            for record in (interface.nodes or {}).values():
+                if not isinstance(record, dict):
+                    continue
+                user = record.get("user") or {}
+                record_id = user.get("id")
+                if not record_id and record.get("num") is not None:
+                    record_id = f"!{int(record['num']):08x}"
+                if str(record_id).lower() != node_id.lower():
+                    continue
+                # The Python client does not update its NodeDB projection after
+                # these local admin writes, so keep both accepted key styles in
+                # sync until a later radio packet replaces the record.
+                record[field] = value
+                if snake_field in record:
+                    record[snake_field] = value
+                return
 
     @staticmethod
     def _operation_error(packet: dict[str, Any]) -> str | None:
@@ -641,22 +711,130 @@ class MeshtasticManager:
                 if managed_node_id
                 else None
             )
+            managed_identity = managed_node_id or self._local_node_id(interface)
+            if managed_identity and node_id.lower() == managed_identity:
+                raise ValueError(
+                    "Favorite/ignore is not applicable to the managed radio itself"
+                )
             managed_node = self._managed_node(managed_node_id)
-            with self._command_lock:
-                packet = getattr(managed_node, management_methods[action])(node_id)
-                if managed_node_id:
-                    interface.waitForAckNak()
+            ack_response: dict[str, Any] = {}
+            session_refreshed = False
+            attempts = 1
+            packet: Any = None
+            try:
+                with self._command_lock:
+                    callback_overridden = False
+                    had_callback_override = False
+                    previous_callback_override: Any = None
+                    if managed_node_id and hasattr(managed_node, "onAckNak"):
+                        instance_values = getattr(managed_node, "__dict__", {})
+                        had_callback_override = "onAckNak" in instance_values
+                        previous_callback_override = instance_values.get("onAckNak")
+                        original_callback = managed_node.onAckNak
+
+                        def capture_ack(response: dict[str, Any]) -> None:
+                            ack_response["packet"] = _safe(response)
+                            original_callback(response)
+
+                        # MeshInterface intentionally suppresses a plain ACK unless
+                        # the registered callback has this exact name.
+                        capture_ack.__name__ = "onAckNak"
+                        managed_node.onAckNak = capture_ack
+                        callback_overridden = True
+                    try:
+                        packet = getattr(managed_node, management_methods[action])(
+                            node_id
+                        )
+                        if managed_node_id:
+                            interface.waitForAckNak()
+                        ack_error = self._admin_response_error(
+                            ack_response.get("packet")
+                        )
+                        if (
+                            managed_node_id
+                            and ack_error == "ADMIN_BAD_SESSION_KEY"
+                        ):
+                            session_refreshed = True
+                            attempts = 2
+                            self._clear_admin_session_key(interface, managed_node)
+                            managed_node.ensureSessionKey()
+                            ack_response.clear()
+                            packet = getattr(
+                                managed_node, management_methods[action]
+                            )(node_id)
+                            interface.waitForAckNak()
+                    finally:
+                        if callback_overridden:
+                            if had_callback_override:
+                                managed_node.onAckNak = previous_callback_override
+                            else:
+                                delattr(managed_node, "onAckNak")
+            except Exception as exc:
+                error_text = str(exc) or type(exc).__name__
+                if packet is None:
+                    acknowledgment = "not_sent"
+                elif "timed out" in error_text.lower():
+                    acknowledgment = "timeout"
+                else:
+                    acknowledgment = "error"
+                self._add_event(
+                    "operation_result",
+                    operation=action,
+                    target=node_id,
+                    managed_node=managed_node_id or self._profile_id,
+                    remote=bool(managed_node_id),
+                    success=False,
+                    error=error_text,
+                    result={
+                        "command_sent": packet is not None,
+                        "acknowledgment": acknowledgment,
+                        "state_verified": False,
+                        "remote_state_readable": False
+                        if managed_node_id
+                        else True,
+                        "session_refreshed": session_refreshed,
+                        "attempts": attempts,
+                    },
+                    packet=_safe(packet),
+                )
+                raise
+
             safe_packet = _safe(packet)
+            ack_packet = ack_response.get("packet") or {}
+            ack_error = self._admin_response_error(ack_packet)
+            rejected = ack_error not in {None, "NONE", 0}
+            acknowledgment = (
+                "nak"
+                if rejected
+                else "ack"
+                if ack_packet
+                else "local"
+                if not managed_node_id
+                else "acknowledged"
+            )
+            if not rejected and not managed_node_id:
+                self._update_cached_node_preference(interface, node_id, action)
             self._add_event(
                 "operation_result",
                 operation=action,
                 target=node_id,
                 managed_node=managed_node_id or self._profile_id,
                 remote=bool(managed_node_id),
-                success=True,
-                result={"updated": True},
+                success=not rejected,
+                error=ack_error if rejected else None,
+                result={
+                    "command_sent": True,
+                    "acknowledgment": acknowledgment,
+                    "state_verified": not bool(managed_node_id),
+                    "remote_state_readable": False if managed_node_id else True,
+                    "session_refreshed": session_refreshed,
+                    "attempts": attempts,
+                },
                 packet=safe_packet,
+                acknowledgment_packet=ack_packet or None,
             )
+            if rejected:
+                raise RuntimeError(f"Remote node rejected the command: {ack_error}")
             return safe_packet
 
         if hop_limit is None:
@@ -1002,7 +1180,7 @@ class MeshtasticManager:
                         remote = self._remote_nodes.get(node_id)
                     if remote is None:
                         remote = interface.getNode(
-                            node_id,
+                            int(node_id[1:], 16),
                             requestChannels=False,
                             timeout=45,
                         )
@@ -1359,6 +1537,7 @@ class MeshtasticManager:
             if interface is None:
                 return []
             raw_nodes = list((interface.nodes or {}).values())
+        local_node_id = self._local_node_id(interface)
 
         nodes: list[dict[str, Any]] = []
         for raw in raw_nodes:
@@ -1366,19 +1545,26 @@ class MeshtasticManager:
             user = node.get("user") or {}
             metrics = node.get("deviceMetrics") or node.get("device_metrics") or {}
             position = node.get("position") or {}
+            node_id = user.get("id") or f"!{node.get('num', 0):08x}"
+            is_self = bool(local_node_id and node_id.lower() == local_node_id)
             nodes.append(
                 {
                     "num": node.get("num"),
-                    "id": user.get("id") or f"!{node.get('num', 0):08x}",
+                    "id": node_id,
                     "long_name": user.get("longName") or user.get("long_name") or "Unknown",
                     "short_name": user.get("shortName") or user.get("short_name") or "?",
                     "hardware": user.get("hwModel") or user.get("hw_model"),
                     "role": user.get("role"),
+                    "is_self": is_self,
                     "is_messageable": not (
                         user.get("isUnmessagable") or user.get("is_unmessagable")
                     ),
-                    "is_favorite": _pick(node, "isFavorite", "is_favorite", default=False),
-                    "is_ignored": _pick(node, "isIgnored", "is_ignored", default=False),
+                    "is_favorite": False
+                    if is_self
+                    else _pick(node, "isFavorite", "is_favorite", default=False),
+                    "is_ignored": False
+                    if is_self
+                    else _pick(node, "isIgnored", "is_ignored", default=False),
                     "is_muted": _pick(node, "isMuted", "is_muted", default=False),
                     "channel": node.get("channel"),
                     "via_mqtt": _pick(node, "viaMqtt", "via_mqtt", default=False),
