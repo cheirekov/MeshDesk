@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from meshdesk.app import create_app
 from meshdesk.connection_profiles import ConnectionProfileStore
+from meshdesk.manager import RequestCooldownError
 
 
 class StubManager:
@@ -309,6 +310,22 @@ def test_node_action_endpoint():
         4,
         None,
     )
+
+
+def test_node_action_cooldown_returns_retry_after():
+    class CooldownManager(StubManager):
+        def request_node_action(self, *_args, **_kwargs):
+            raise RequestCooldownError("traceroute", 12.2, "global")
+
+    with TestClient(create_app(CooldownManager())) as client:
+        response = client.post(
+            "/api/node-actions",
+            json={"node_id": "!12345678", "action": "traceroute"},
+        )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "13"
+    assert response.json()["detail"]["code"] == "request_cooldown"
 
 
 def test_channel_manager_endpoints():

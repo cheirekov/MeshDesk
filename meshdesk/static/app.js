@@ -964,9 +964,61 @@ function updateControls(status) {
   });
   $("#localPublicKey").textContent = status.public_key || "—";
   updateConnectionHealth(status);
+  applyRequestCooldowns();
+  updateChatQueueIndicator();
   updateByteCount();
   if (status.error && status.error !== state.lastError) toast(status.error, true);
   state.lastError = status.error;
+}
+
+function updateChatQueueIndicator() {
+  const subtitle = $("#chatSubtitle");
+  if (!subtitle) return;
+  const meta = conversationMeta(state.selectedConversation);
+  const queue = state.status?.tx_queue;
+  const applicationCount =
+    Number(queue?.application_pending || 0) + (queue?.active_client_id ? 1 : 0);
+  const radio = queue?.radio || {};
+  const radioFull = radio.free === 0 && radio.max_length != null;
+  const details = [];
+  if (applicationCount) details.push(`TX: ${applicationCount} чака`);
+  if (radioFull) details.push(`radio queue: 0/${radio.max_length} свободни`);
+  subtitle.textContent = [meta.subtitle, ...details].filter(Boolean).join(" · ");
+}
+
+function activeRequestCooldown(action, nodeId) {
+  const active = state.status?.request_controls?.active || [];
+  const now = Date.now();
+  return active.find(
+    (item) =>
+      item.action === action &&
+      item.expires_at_ms > now &&
+      (item.scope === "global" || item.target?.toLowerCase() === nodeId?.toLowerCase()),
+  );
+}
+
+function applyRequestCooldowns() {
+  document.querySelectorAll("[data-request-action]").forEach((button) => {
+    const cooldown = activeRequestCooldown(
+      button.dataset.requestAction,
+      button.dataset.node,
+    );
+    const label = button.dataset.defaultLabel || button.textContent.trim();
+    button.dataset.defaultLabel = label.replace(/\s+\(\d+s\)$/, "");
+    if (cooldown) {
+      const seconds = Math.max(1, Math.ceil((cooldown.expires_at_ms - Date.now()) / 1000));
+      button.disabled = true;
+      button.textContent = `${button.dataset.defaultLabel} (${seconds}s)`;
+      button.title =
+        cooldown.scope === "global"
+          ? `Общ Meshtastic cooldown: още ${seconds} секунди`
+          : `Cooldown за този възел: още ${seconds} секунди`;
+    } else {
+      button.disabled = state.connection !== "connected";
+      button.textContent = button.dataset.defaultLabel;
+      button.removeAttribute("title");
+    }
+  });
 }
 
 function updateConnectionHealth(status) {
@@ -1426,10 +1478,17 @@ function renderConversations() {
 }
 
 function deliveryLabel(message) {
-  if (!message.wantAck) return "";
+  if (message.delivery === "queued")
+    return '<span class="delivery queued">⌛ в радио опашката</span>';
+  if (message.delivery === "sent")
+    return '<span class="delivery sent">↑ предадено на радиото</span>';
   if (message.delivery === "delivered") return '<span class="delivery delivered">✓ ACK</span>';
   if (message.delivery === "failed") return '<span class="delivery failed">× NAK</span>';
-  return '<span class="delivery pending">… чака ACK</span>';
+  if (message.delivery === "timeout")
+    return '<span class="delivery failed">⌛ без ACK / timeout</span>';
+  if (message.wantAck)
+    return '<span class="delivery pending">… предадено · чака ACK</span>';
+  return "";
 }
 
 function renderChat() {
@@ -1440,7 +1499,7 @@ function renderChat() {
   const meta = conversationMeta(key);
   $("#chatAvatar").textContent = meta.avatar;
   $("#chatTitle").textContent = meta.title;
-  $("#chatSubtitle").textContent = meta.subtitle;
+  updateChatQueueIndicator();
 
   const messages = key ? state.chatMessages[key] || [] : [];
   const container = $("#chatMessages");
@@ -1753,6 +1812,7 @@ function renderNodes(nodes) {
               node.id,
             )}" ${node.is_messageable ? "" : "disabled"}>Съобщение</button>
             <button type="button" class="node-quick-action ghost" data-action="traceroute"
+              data-request-action="traceroute" data-default-label="Trace"
               data-node="${escapeHtml(node.id)}">Trace</button>
             <button type="button" class="node-quick-action ghost" data-action="telemetry"
               data-node="${escapeHtml(node.id)}">Telemetry</button>
@@ -1786,6 +1846,7 @@ function renderNodes(nodes) {
   container.querySelectorAll(".node-inspect").forEach((button) => {
     button.addEventListener("click", () => openNodeInspector(button.dataset.node));
   });
+  applyRequestCooldowns();
 }
 
 function valueOrDash(value, suffix = "") {
@@ -1834,6 +1895,8 @@ function routeHtml(route) {
 function operationLabel(event) {
   if (event.operation === "traceroute") return "Traceroute";
   if (event.operation === "position") return "Position";
+  if (event.operation === "user_info") return "User Info";
+  if (event.operation === "neighbor_info") return "Neighbor Info";
   if (event.operation === "favorite") return "Добавяне в любими";
   if (event.operation === "unfavorite") return "Премахване от любими";
   if (event.operation === "ignore") return "Игнориране на възел";
@@ -1856,6 +1919,8 @@ function operationLabel(event) {
     air_quality: "Air quality telemetry",
     power: "Power telemetry",
     local_stats: "Local statistics",
+    host: "Host telemetry",
+    pax: "PAX telemetry",
   };
   return names[event.telemetry_type] || "Telemetry";
 }
@@ -1887,6 +1952,10 @@ function operationResultHtml(event) {
     body = metricTable(event.result?.telemetry);
   } else if (event.operation === "position") {
     body = metricTable(event.result?.position);
+  } else if (event.operation === "user_info") {
+    body = metricTable(event.result?.user);
+  } else if (event.operation === "neighbor_info") {
+    body = metricTable(event.result?.neighbor_info);
   } else if (event.operation === "remote_config") {
     body = `<p>Секция „${escapeHtml(event.section)}“ е заредена чрез PKI admin.</p>`;
   } else if (event.operation === "administration") {
@@ -2075,7 +2144,8 @@ function renderNodeInspector(node) {
       </div>
       <div class="inspector-actions">
         <button type="button" class="secondary inspector-action"
-          data-action="traceroute">Traceroute</button>
+          data-action="traceroute" data-request-action="traceroute"
+          data-default-label="Traceroute" data-node="${escapeHtml(node.id)}">Traceroute</button>
         <div class="telemetry-request">
           <select id="inspectorTelemetryType">
             <option value="device">Device metrics</option>
@@ -2083,16 +2153,28 @@ function renderNodeInspector(node) {
             <option value="air_quality">Air quality</option>
             <option value="power">Power</option>
             <option value="local_stats">Local stats</option>
+            <option value="host">Host metrics</option>
+            <option value="pax">PAX metrics</option>
           </select>
           <button type="button" class="secondary inspector-action"
             data-action="telemetry">Telemetry</button>
         </div>
         <button type="button" class="secondary inspector-action"
           data-action="position">Position</button>
+        <button type="button" class="secondary inspector-action"
+          data-action="user_info">User Info</button>
+        <button type="button" class="secondary inspector-action"
+          data-action="neighbor_info" data-request-action="neighbor_info"
+          data-default-label="Neighbor Info" data-node="${escapeHtml(
+            node.id,
+          )}">Neighbor Info</button>
         <button type="button" class="ghost inspector-message"
           ${node.is_messageable ? "" : "disabled"}>Съобщение</button>
         <button type="button" class="ghost inspector-admin">Remote admin</button>
       </div>
+      <p class="inspector-note">Traceroute използва общ 30 s cooldown за mesh-а.
+        Neighbor Info използва 180 s cooldown само за този възел. Оставащото
+        време се показва върху бутона; chat трафикът не се блокира.</p>
     </section>
 
     <section class="inspector-section">
@@ -2185,6 +2267,7 @@ function renderNodeInspector(node) {
     });
   };
   bindActionButtons($("#inspectorContent"));
+  applyRequestCooldowns();
   $("#inspectorNodeDbTarget").addEventListener("change", () => {
     const selectedTarget = $("#inspectorNodeDbTarget").value;
     if (state.inspector?.type === "node") {
@@ -2422,13 +2505,28 @@ async function requestNodeAction(
             operation: action,
             telemetry_type: telemetryType,
           })}: remote командата получи ACK; състоянието остава неизвестно`
-        : `${operationLabel({
-            operation: action,
-            telemetry_type: telemetryType,
-          })} е приложено`,
+        : preferenceAction
+          ? `${operationLabel({
+              operation: action,
+              telemetry_type: telemetryType,
+            })} е приложено`
+          : `${operationLabel({
+              operation: action,
+              telemetry_type: telemetryType,
+            })}: заявката е изпратена`,
     );
   } catch (error) {
-    toast(error.message, true);
+    if (error.details?.code === "request_cooldown") {
+      const seconds = Math.max(1, Math.ceil(error.details.remaining_seconds || 0));
+      toast(
+        `${operationLabel({ operation: action, telemetry_type: telemetryType })}: ` +
+          `изчакай още ${seconds} секунди`,
+        true,
+      );
+      setTimeout(refreshStatus, 100);
+    } else {
+      toast(error.message, true);
+    }
   }
 }
 
@@ -3418,9 +3516,17 @@ async function sendMessage(event) {
 
 function eventTitle(event) {
   if (event.kind === "outgoing") return `Към ${event.to}`;
+  if (event.kind === "message_status")
+    return event.status === "sent"
+      ? "Предадено на радиото"
+      : "Предадено на радиото · чака ACK";
   if (event.kind === "incoming") return `От ${event.from || "unknown"}`;
   if (event.kind === "delivery")
-    return event.status === "delivered" ? "Доставено / ACK" : "Недоставено / NAK";
+    return event.status === "delivered"
+      ? "Доставено / ACK"
+      : event.status === "timeout"
+        ? "Изтече ACK timeout"
+        : "Недоставено / NAK";
   if (event.kind === "operation_request") return `${operationLabel(event)} · заявка`;
   if (event.kind === "operation_result")
     return `${operationLabel(event)} · ${event.success ? "отговор" : "грешка"}`;
@@ -3475,15 +3581,41 @@ function addChatEvent(event) {
         sourceEvent: event,
         wantAck: event.want_ack !== false,
         delivery:
-          event.want_ack === false
-            ? null
+          event.delivery ||
+          (event.want_ack === false
+            ? "sent"
             : earlyReceipt?.status === "delivered"
               ? "delivered"
               : earlyReceipt
-                ? "failed"
-                : "pending",
+                ? earlyReceipt.status
+                : "enroute"),
+        clientId: event.client_id,
       });
       if (earlyReceipt) delete state.deliveryReceipts[String(packetId)];
+    }
+    return;
+  }
+  if (event.kind === "message_status") {
+    const matched = Object.values(state.chatMessages).some((messages) => {
+      const message = messages.find(
+        (item) =>
+          item.direction === "outgoing" &&
+          ((event.client_id && item.clientId === event.client_id) ||
+            (event.packet_id != null &&
+              item.packetId != null &&
+              String(item.packetId) === String(event.packet_id))),
+      );
+      if (!message) return false;
+      message.delivery = event.status;
+      message.packetId = event.packet_id ?? message.packetId;
+      message.statusEvent = event;
+      if (event.packet && Object.keys(event.packet).length) {
+        message.sourceEvent.packet = event.packet;
+      }
+      return true;
+    });
+    if (!matched && event.client_id) {
+      state.deliveryReceipts[`client:${event.client_id}`] = event;
     }
     return;
   }
@@ -3492,17 +3624,23 @@ function addChatEvent(event) {
       const message = messages.find(
         (item) =>
           item.direction === "outgoing" &&
-          item.packetId != null &&
-          String(item.packetId) === String(event.packet_id),
+          ((event.client_id && item.clientId === event.client_id) ||
+            (item.packetId != null &&
+              event.packet_id != null &&
+              String(item.packetId) === String(event.packet_id))),
       );
       if (!message) return false;
-      message.delivery = event.status === "delivered" ? "delivered" : "failed";
+      message.delivery = event.status;
       message.deliveryError = event.error;
       message.deliveryEvent = event;
       return true;
     });
-    if (!matched && event.packet_id != null) {
-      state.deliveryReceipts[String(event.packet_id)] = event;
+    if (!matched) {
+      if (event.client_id) {
+        state.deliveryReceipts[`client:${event.client_id}`] = event;
+      } else if (event.packet_id != null) {
+        state.deliveryReceipts[String(event.packet_id)] = event;
+      }
     }
   }
 }
@@ -3542,6 +3680,10 @@ function appendEvents(events, { historical = false } = {}) {
         ? event.error === "NONE"
           ? `Packet ${event.packet_id || ""} acknowledged by ${event.to}`
           : `${event.error || "NO_RESPONSE"} · packet ${event.packet_id || ""}`
+        : event.kind === "message_status"
+        ? `Packet ${event.packet_id || "—"} · ${
+            event.status === "sent" ? "без заявен ACK" : "изчаква ACK"
+          }`
         : `${event.portnum || "Meshtastic packet"} · channel ${event.channel ?? 0}`);
     row.innerHTML = `
       <span class="event-dot"></span>
@@ -3821,6 +3963,7 @@ renderChat();
 setInterval(refreshStatus, 1500);
 setInterval(pollEvents, 1000);
 setInterval(pollPairing, 1000);
+setInterval(applyRequestCooldowns, 1000);
 setInterval(() => {
   if (state.connection === "connected" && Date.now() - state.nodeRefreshAt > 30000) {
     refreshNodes();

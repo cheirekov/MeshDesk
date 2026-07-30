@@ -689,6 +689,9 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 }
 .delivery.delivered { color: var(--green); }
 .delivery.failed { color: var(--red); }
+.delivery.queued { color: #e6b85c; }
+.delivery.sent,
+.delivery.pending { color: #9cccf2; }
 .delivery.recovered { color: #9cccf2; }
 .reply-message {
   padding: 0;

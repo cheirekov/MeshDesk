@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from datetime import UTC, datetime
 
-from meshtastic.protobuf import channel_pb2, localonly_pb2, storeforward_pb2
+from meshtastic.protobuf import (
+    channel_pb2,
+    localonly_pb2,
+    portnums_pb2,
+    storeforward_pb2,
+)
 from meshtastic.util import to_node_num
 
 from meshdesk.history import EncryptedHistory
-from meshdesk.manager import MeshtasticManager
+from meshdesk.manager import MeshtasticManager, RequestCooldownError
 
 
 class FakeLocalNode:
@@ -194,6 +200,53 @@ def test_send_text_records_packet_and_event():
     assert manager.events()[1]["kind"] == "delivery"
 
 
+def test_queued_message_exposes_radio_wait_then_enroute_status():
+    manager, interface = connected_manager()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_send(text, **kwargs):
+        entered.set()
+        assert release.wait(2)
+        interface.sent.append((text, kwargs))
+        return {"id": 43}
+
+    interface.sendText = blocked_send
+    queued = manager.queue_text("wait for radio", "!12345678", 0, True)
+
+    assert queued["status"] == "queued"
+    assert entered.wait(1)
+    assert manager.events()[0]["delivery"] == "queued"
+    assert manager.status()["tx_queue"]["active_client_id"] == queued["client_id"]
+
+    release.set()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if any(event["kind"] == "message_status" for event in manager.events()):
+            break
+        time.sleep(0.01)
+
+    status_event = next(
+        event for event in manager.events() if event["kind"] == "message_status"
+    )
+    assert status_event["status"] == "enroute"
+    assert status_event["packet_id"] == 43
+
+
+def test_queued_message_ack_is_correlated_by_client_id():
+    manager, interface = connected_manager()
+    queued = manager.queue_text("ack me", "!12345678", 0, True)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and not interface.sent:
+        time.sleep(0.01)
+    callback = interface.sent[0][1]["onResponse"]
+    callback({"decoded": {"requestId": 42, "routing": {"errorReason": "NONE"}}})
+
+    delivery = next(event for event in manager.events() if event["kind"] == "delivery")
+    assert delivery["client_id"] == queued["client_id"]
+    assert delivery["status"] == "delivered"
+
+
 def test_connection_health_distinguishes_manual_disconnect_and_loss():
     manager, interface = connected_manager()
     manager._transport = "tcp"  # noqa: SLF001
@@ -305,6 +358,44 @@ def test_node_diagnostic_actions_record_requests_and_responses():
     assert result["kind"] == "operation_result"
     assert result["success"] is True
     assert result["result"]["telemetry"]["environmentMetrics"]["temperature"] == 21.5
+
+
+def test_traceroute_cooldown_is_global_but_does_not_block_telemetry():
+    manager, interface = connected_manager()
+    manager.request_node_action("!12345678", "traceroute")
+
+    try:
+        manager.request_node_action("!abcdef01", "traceroute")
+    except RequestCooldownError as exc:
+        assert exc.action == "traceroute"
+        assert exc.scope == "global"
+        assert exc.remaining_seconds > 0
+    else:
+        raise AssertionError("Expected a global traceroute cooldown")
+
+    manager.request_node_action("!abcdef01", "telemetry")
+    active = manager.status()["request_controls"]["active"]
+    assert active[0]["action"] == "traceroute"
+    assert active[0]["target"] is None
+    assert len(interface.sent_data) == 2
+
+
+def test_neighbor_info_cooldown_is_per_node_and_user_info_is_available():
+    manager, interface = connected_manager()
+    manager.request_node_action("!12345678", "neighbor_info")
+    manager.request_node_action("!abcdef01", "neighbor_info")
+    manager.request_node_action("!abcdef01", "user_info")
+
+    try:
+        manager.request_node_action("!12345678", "neighbor_info")
+    except RequestCooldownError as exc:
+        assert exc.scope == "node"
+    else:
+        raise AssertionError("Expected a per-node Neighbor Info cooldown")
+
+    ports = [kwargs["portNum"] for _, kwargs in interface.sent_data]
+    assert portnums_pb2.PortNum.NEIGHBORINFO_APP in ports
+    assert portnums_pb2.PortNum.NODEINFO_APP in ports
 
 
 def test_node_management_action_updates_local_nodedb():

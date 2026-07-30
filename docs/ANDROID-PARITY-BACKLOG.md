@@ -50,6 +50,7 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 | MSG-09 | P2 | `@node` mentions и navigation | node identity | queued |
 | MSG-10 | P2 | Local delete/copy/share actions | history repository | queued |
 | MSG-11 | P2 | Shared contacts/identity URL | PKI/contact schema | queued |
+| MSG-12 | P1 | Queued → radio/enroute → ACK/NAK/timeout lifecycle | firmware queue status | **completed** |
 
 ## Nodes, trust and management
 
@@ -73,12 +74,13 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 | OBS-01 | P1 | Time-series telemetry storage | versioned local database | queued |
 | OBS-02 | P1 | Device/environment/power/air charts | OBS-01 | queued |
 | OBS-03 | P1 | CSV export и timeframe filters | OBS-01 | queued |
-| OBS-04 | P1 | Neighbor Info ingestion | packet decoder/history | queued |
+| OBS-04 | P1 | Neighbor Info request/ingestion | packet decoder/history | **started** |
 | OBS-05 | P1 | Mesh topology graph | OBS-04 + node identity | queued |
 | OBS-06 | P2 | Local Stats/congestion dashboard | OBS-01 | queued |
 | OBS-07 | P2 | Position history | OBS-01 | queued |
 | OBS-08 | P1 | Search/filter/export на packet и app logs | redaction pipeline | queued |
 | OBS-09 | P2 | Discovery scan reports/history | DISC-01 | queued |
+| OBS-10 | P1 | Android-compatible Traceroute/Neighbor cooldown с countdown | request lifecycle | **completed** |
 
 ## Map and spatial workflows
 

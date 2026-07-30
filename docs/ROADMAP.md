@@ -64,12 +64,16 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 - [ ] Реален `reply_id` и quoted reply.
 - [ ] Emoji reactions.
 - [ ] Пълни routing/delivery състояния и човешки обяснения.
+- [x] Честен queued → radio/enroute → ACK/NAK/timeout lifecycle.
+- [x] Видим firmware/application TX queue status без блокиране на HTTP/UI.
 - [ ] Store & Forward++ статус.
 - [ ] Full-text search, retention и export.
 - [ ] Quick Chat и desktop notifications.
 
 ## M4 — Observability and topology
 
+- [x] User Info, Neighbor Info, host и PAX telemetry заявки от Node Inspector.
+- [x] Global traceroute и per-node Neighbor Info cooldown с backend enforcement.
 - [ ] Time-series база за telemetry и position.
 - [ ] Графики и CSV export.
 - [ ] Neighbor Info ingestion.

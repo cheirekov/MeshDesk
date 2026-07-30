@@ -14,7 +14,7 @@ from meshdesk.connection_profiles import (
     ConnectionProfileStore,
 )
 from meshdesk.discovery import TcpDiscovery
-from meshdesk.manager import MeshtasticManager
+from meshdesk.manager import MeshtasticManager, RequestCooldownError
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -77,6 +77,8 @@ class NodeActionRequest(BaseModel):
         "traceroute",
         "telemetry",
         "position",
+        "user_info",
+        "neighbor_info",
         "favorite",
         "unfavorite",
         "ignore",
@@ -89,6 +91,8 @@ class NodeActionRequest(BaseModel):
         "air_quality",
         "power",
         "local_stats",
+        "host",
+        "pax",
     ] = "device"
     hop_limit: int | None = Field(default=None, ge=1, le=7)
     managed_node_id: str | None = None
@@ -388,6 +392,18 @@ def create_app(
                 request.managed_node_id,
             )
             return {"packet": packet}
+        except RequestCooldownError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "request_cooldown",
+                    "action": exc.action,
+                    "scope": exc.scope,
+                    "remaining_seconds": round(exc.remaining_seconds, 1),
+                    "message": str(exc),
+                },
+                headers={"Retry-After": str(max(1, int(exc.remaining_seconds + 0.999)))},
+            ) from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -499,13 +515,14 @@ def create_app(
     @api.post("/api/messages")
     def send_message(request: MessageRequest) -> dict:
         try:
-            packet = radio.send_text(
+            sender = getattr(radio, "queue_text", radio.send_text)
+            result = sender(
                 request.text,
                 request.destination,
                 request.channel,
                 request.want_ack,
             )
-            return {"packet": packet}
+            return result if "client_id" in result else {"packet": result}
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:

@@ -17,6 +17,7 @@ from google.protobuf.message import Message
 from meshtastic.protobuf import (
     channel_pb2,
     mesh_pb2,
+    paxcount_pb2,
     portnums_pb2,
     storeforward_pb2,
     telemetry_pb2,
@@ -63,10 +64,19 @@ TELEMETRY_TYPES = {
     "air_quality": "air_quality_metrics",
     "power": "power_metrics",
     "local_stats": "local_stats",
+    "host": "host_metrics",
+    "pax": None,
 }
+REQUEST_COOLDOWNS = {
+    "traceroute": {"seconds": 30, "scope": "global"},
+    "neighbor_info": {"seconds": 180, "scope": "node"},
+}
+DEFAULT_MESSAGE_DELIVERY_TIMEOUT_SECONDS = 300
+DEFAULT_NODE_RESPONSE_TIMEOUT_SECONDS = 30
 HISTORY_EVENT_KINDS = {
     "incoming",
     "outgoing",
+    "message_status",
     "delivery",
     "operation_request",
     "operation_result",
@@ -75,6 +85,7 @@ HISTORY_EVENT_KINDS = {
 TRANSPORT_ACTIVITY_EVENT_KINDS = {
     "incoming",
     "outgoing",
+    "message_status",
     "delivery",
     "operation_request",
     "operation_result",
@@ -110,6 +121,17 @@ def _pick(mapping: dict[str, Any], *keys: str, default: Any = None) -> Any:
         if value is not None:
             return value
     return default
+
+
+class RequestCooldownError(RuntimeError):
+    def __init__(self, action: str, remaining_seconds: float, scope: str) -> None:
+        self.action = action
+        self.remaining_seconds = max(0.0, remaining_seconds)
+        self.scope = scope
+        super().__init__(
+            f"{action} can be requested again in "
+            f"{max(1, int(self.remaining_seconds + 0.999))} seconds"
+        )
 
 
 class MeshtasticManager:
@@ -150,6 +172,16 @@ class MeshtasticManager:
         self._history_replay_requested_at: int | None = None
         self._history_replay_remaining = 0
         self._pending_receive_packets: list[tuple[Any, dict[str, Any]]] = []
+        self._request_cooldowns: dict[str, float] = {}
+        self._pending_node_responses: dict[str, threading.Timer] = {}
+        self._outbound_condition = threading.Condition()
+        self._outbound_messages: deque[dict[str, Any]] = deque()
+        self._outbound_worker_started = False
+        self._outbound_active: str | None = None
+        self._delivery_states: dict[str, str] = {}
+        self._delivery_destinations: dict[str, str] = {}
+        self._delivery_timers: dict[str, threading.Timer] = {}
+        self._delivery_order: deque[str] = deque()
         self.pairer = BluetoothPairer()
 
         pub.subscribe(self._on_receive, "meshtastic.receive")
@@ -230,6 +262,7 @@ class MeshtasticManager:
             self._history_replay_requested_at = None
             self._history_replay_remaining = 0
             self._pending_receive_packets = []
+            self._request_cooldowns = {}
         self._add_event("status", message=f"Connecting via {transport.upper()} to {target}")
         threading.Thread(
             target=self._connect_worker,
@@ -375,6 +408,7 @@ class MeshtasticManager:
             self._target = None
             self._error = None
             self._connected_at = None
+        self._cancel_outbound_messages()
         if interface is not None:
             close_finished = threading.Event()
 
@@ -397,6 +431,32 @@ class MeshtasticManager:
             self.pairer.disconnect_device(target)
         if had_connection:
             self._add_event("status", message="Disconnected")
+
+    def _cancel_outbound_messages(self) -> None:
+        with self._outbound_condition:
+            self._outbound_messages.clear()
+        with self._lock:
+            pending = [
+                (client_id, self._delivery_destinations.get(client_id, "^all"))
+                for client_id, state in self._delivery_states.items()
+                if state in {"queued", "enroute"}
+            ]
+            timers = list(self._delivery_timers.values())
+            self._delivery_timers.clear()
+            node_timers = list(self._pending_node_responses.values())
+            self._pending_node_responses.clear()
+        for timer in timers:
+            timer.cancel()
+        for timer in node_timers:
+            timer.cancel()
+        for client_id, destination in pending:
+            self._finish_delivery(
+                client_id,
+                None,
+                "failed",
+                "DISCONNECTED",
+                destination,
+            )
 
     @staticmethod
     def scan_ble() -> list[dict[str, Any]]:
@@ -625,13 +685,12 @@ class MeshtasticManager:
         )
         return self.channel_slots()
 
-    def send_text(
+    def _validated_message(
         self,
         text: str,
-        destination: str = "^all",
-        channel: int = 0,
-        want_ack: bool = True,
-    ) -> dict[str, Any]:
+        destination: str,
+        channel: int,
+    ) -> tuple[str, str]:
         text = text.strip()
         if not text:
             raise ValueError("Message cannot be empty")
@@ -648,13 +707,71 @@ class MeshtasticManager:
         destination = destination.strip() or "^all"
         if destination != "^all" and not re.fullmatch(r"![0-9a-fA-F]{8}", destination):
             raise ValueError("Direct destination must be a node ID such as !1234abcd")
+        return text, destination
 
-        response_holder: dict[str, Any] = {"packet_id": None}
+    def _delivery_timeout_seconds(self, interface: Any) -> int:
+        my_info = getattr(interface, "myInfo", None)
+        milliseconds = (
+            getattr(my_info, "message_timeout_msec", None)
+            or getattr(my_info, "messageTimeoutMsec", None)
+        )
+        with contextlib.suppress(TypeError, ValueError):
+            if milliseconds:
+                return max(30, int(milliseconds) // 1000)
+        return DEFAULT_MESSAGE_DELIVERY_TIMEOUT_SECONDS
+
+    def _finish_delivery(
+        self,
+        client_id: str,
+        packet_id: Any,
+        status: str,
+        error: str | None,
+        destination: str,
+    ) -> None:
+        with self._lock:
+            current = self._delivery_states.get(client_id)
+            if current in {"delivered", "failed", "timeout"}:
+                return
+            self._delivery_states[client_id] = status
+            timer = self._delivery_timers.pop(client_id, None)
+        if timer is not None:
+            timer.cancel()
+        self._add_event(
+            "delivery",
+            client_id=client_id,
+            packet_id=packet_id,
+            status=status,
+            error=error,
+            to=destination,
+        )
+
+    def _send_text_packet(
+        self,
+        interface: Any,
+        text: str,
+        destination: str,
+        channel: int,
+        want_ack: bool,
+        client_id: str | None = None,
+    ) -> dict[str, Any]:
+        response_holder: dict[str, Any] = {
+            "packet_id": None,
+            "client_id": client_id,
+        }
 
         def onAckNak(response: dict[str, Any]) -> None:  # Name is significant to meshtastic-python.
             decoded = response.get("decoded") or {}
             routing = decoded.get("routing") or {}
             error = routing.get("errorReason", "NONE")
+            if client_id:
+                self._finish_delivery(
+                    client_id,
+                    response_holder["packet_id"] or decoded.get("requestId"),
+                    "delivered" if error == "NONE" else "failed",
+                    error,
+                    destination,
+                )
+                return
             self._add_event(
                 "delivery",
                 packet_id=response_holder["packet_id"] or decoded.get("requestId"),
@@ -673,15 +790,176 @@ class MeshtasticManager:
             )
         safe_packet = _safe(packet)
         response_holder["packet_id"] = safe_packet.get("id")
+        return safe_packet
+
+    def send_text(
+        self,
+        text: str,
+        destination: str = "^all",
+        channel: int = 0,
+        want_ack: bool = True,
+    ) -> dict[str, Any]:
+        text, destination = self._validated_message(text, destination, channel)
+        interface = self._connected_interface()
+        safe_packet = self._send_text_packet(
+            interface,
+            text,
+            destination,
+            channel,
+            want_ack,
+        )
         self._add_event(
             "outgoing",
             text=text,
-            to=destination or "^all",
+            to=destination,
             channel=channel,
             want_ack=want_ack,
+            delivery="enroute" if want_ack else "sent",
             packet=safe_packet,
         )
         return safe_packet
+
+    def queue_text(
+        self,
+        text: str,
+        destination: str = "^all",
+        channel: int = 0,
+        want_ack: bool = True,
+    ) -> dict[str, Any]:
+        """Queue a message without making the HTTP request wait for radio capacity."""
+        text, destination = self._validated_message(text, destination, channel)
+        interface = self._connected_interface()
+        with self._lock:
+            generation = self._generation
+        client_id = uuid.uuid4().hex
+        job = {
+            "client_id": client_id,
+            "generation": generation,
+            "interface": interface,
+            "text": text,
+            "destination": destination,
+            "channel": channel,
+            "want_ack": want_ack,
+        }
+        with self._outbound_condition:
+            self._outbound_messages.append(job)
+            queue_position = len(self._outbound_messages) + bool(self._outbound_active)
+        with self._lock:
+            self._delivery_states[client_id] = "queued"
+            self._delivery_destinations[client_id] = destination
+            self._delivery_order.append(client_id)
+            while len(self._delivery_order) > 1000:
+                expired_id = self._delivery_order.popleft()
+                if self._delivery_states.get(expired_id) not in {"queued", "enroute"}:
+                    self._delivery_states.pop(expired_id, None)
+                    self._delivery_destinations.pop(expired_id, None)
+        self._add_event(
+            "outgoing",
+            client_id=client_id,
+            text=text,
+            to=destination,
+            channel=channel,
+            want_ack=want_ack,
+            delivery="queued",
+            queue_position=queue_position,
+            packet={},
+        )
+        with self._outbound_condition:
+            if not self._outbound_worker_started:
+                self._outbound_worker_started = True
+                threading.Thread(
+                    target=self._outbound_worker,
+                    name="meshdesk-outbound-messages",
+                    daemon=True,
+                ).start()
+            self._outbound_condition.notify()
+        return {
+            "client_id": client_id,
+            "status": "queued",
+            "queue_position": queue_position,
+        }
+
+    def _outbound_worker(self) -> None:
+        while True:
+            with self._outbound_condition:
+                while not self._outbound_messages:
+                    self._outbound_condition.wait()
+                job = self._outbound_messages.popleft()
+                self._outbound_active = job["client_id"]
+            client_id = job["client_id"]
+            try:
+                with self._lock:
+                    current = (
+                        job["generation"] == self._generation
+                        and job["interface"] is self._interface
+                        and self._state == "connected"
+                    )
+                if not current:
+                    self._finish_delivery(
+                        client_id,
+                        None,
+                        "failed",
+                        "DISCONNECTED",
+                        job["destination"],
+                    )
+                    continue
+                packet = self._send_text_packet(
+                    job["interface"],
+                    job["text"],
+                    job["destination"],
+                    job["channel"],
+                    job["want_ack"],
+                    client_id,
+                )
+                packet_id = packet.get("id")
+                with self._lock:
+                    terminal = self._delivery_states.get(client_id) in {
+                        "delivered",
+                        "failed",
+                        "timeout",
+                    }
+                    if not terminal:
+                        self._delivery_states[client_id] = (
+                            "enroute" if job["want_ack"] else "sent"
+                        )
+                if not terminal:
+                    self._add_event(
+                        "message_status",
+                        client_id=client_id,
+                        packet_id=packet_id,
+                        status="enroute" if job["want_ack"] else "sent",
+                        to=job["destination"],
+                        packet=packet,
+                    )
+                if job["want_ack"] and not terminal:
+                    timer = threading.Timer(
+                        self._delivery_timeout_seconds(job["interface"]),
+                        self._finish_delivery,
+                        args=(
+                            client_id,
+                            packet_id,
+                            "timeout",
+                            "NO_RESPONSE",
+                            job["destination"],
+                        ),
+                    )
+                    timer.daemon = True
+                    with self._lock:
+                        if self._delivery_states.get(client_id) == "enroute":
+                            self._delivery_timers[client_id] = timer
+                            timer.start()
+            except Exception as exc:
+                logger.exception("Queued Meshtastic message failed")
+                self._finish_delivery(
+                    client_id,
+                    None,
+                    "failed",
+                    str(exc) or type(exc).__name__,
+                    job["destination"],
+                )
+            finally:
+                with self._outbound_condition:
+                    self._outbound_active = None
 
     @staticmethod
     def _validate_node_destination(node_id: str) -> str:
@@ -790,6 +1068,70 @@ class MeshtasticManager:
         return None if reason in {None, "NONE"} else reason
 
     @staticmethod
+    def _cooldown_key(action: str, node_id: str) -> str | None:
+        rule = REQUEST_COOLDOWNS.get(action)
+        if rule is None:
+            return None
+        return (
+            f"{action}:global"
+            if rule["scope"] == "global"
+            else f"{action}:{node_id.lower()}"
+        )
+
+    def _check_request_cooldown(self, action: str, node_id: str) -> None:
+        key = self._cooldown_key(action, node_id)
+        if key is None:
+            return
+        with self._lock:
+            remaining = self._request_cooldowns.get(key, 0.0) - time.monotonic()
+        if remaining > 0:
+            raise RequestCooldownError(
+                action,
+                remaining,
+                str(REQUEST_COOLDOWNS[action]["scope"]),
+            )
+
+    def _start_request_cooldown(self, action: str, node_id: str) -> None:
+        key = self._cooldown_key(action, node_id)
+        if key is None:
+            return
+        with self._lock:
+            self._request_cooldowns[key] = (
+                time.monotonic() + int(REQUEST_COOLDOWNS[action]["seconds"])
+            )
+
+    def _request_control_status(self) -> dict[str, Any]:
+        now_monotonic = time.monotonic()
+        now_epoch_ms = int(time.time() * 1000)
+        active = []
+        with self._lock:
+            for key, end in list(self._request_cooldowns.items()):
+                remaining = end - now_monotonic
+                if remaining <= 0:
+                    del self._request_cooldowns[key]
+                    continue
+                action, target = key.split(":", 1)
+                active.append(
+                    {
+                        "action": action,
+                        "scope": REQUEST_COOLDOWNS[action]["scope"],
+                        "target": None if target == "global" else target,
+                        "remaining_seconds": round(remaining, 1),
+                        "expires_at_ms": now_epoch_ms + int(remaining * 1000),
+                    }
+                )
+        return {
+            "rules": {
+                action: {
+                    "seconds": rule["seconds"],
+                    "scope": rule["scope"],
+                }
+                for action, rule in REQUEST_COOLDOWNS.items()
+            },
+            "active": active,
+        }
+
+    @staticmethod
     def _route_nodes(
         node_numbers: list[int],
         snr_values: list[int],
@@ -815,6 +1157,14 @@ class MeshtasticManager:
         response_holder: dict[str, Any],
         packet: dict[str, Any],
     ) -> None:
+        request_id = response_holder.get("request_id")
+        with self._lock:
+            if response_holder.get("completed"):
+                return
+            response_holder["completed"] = True
+            timer = self._pending_node_responses.pop(request_id, None)
+        if timer is not None:
+            timer.cancel()
         error = self._operation_error(packet)
         decoded = packet.get("decoded") or {}
         result: dict[str, Any] = {}
@@ -847,9 +1197,22 @@ class MeshtasticManager:
                 ),
             }
         elif operation == "telemetry" and not error:
-            result = {"telemetry": decoded.get("telemetry") or {}}
+            result = {
+                "telemetry": decoded.get("telemetry")
+                or decoded.get("paxcounter")
+                or decoded.get("paxcount")
+                or {}
+            }
         elif operation == "position" and not error:
             result = {"position": decoded.get("position") or {}}
+        elif operation == "user_info" and not error:
+            result = {"user": decoded.get("user") or {}}
+        elif operation == "neighbor_info" and not error:
+            result = {
+                "neighbor_info": decoded.get("neighborinfo")
+                or decoded.get("neighborInfo")
+                or {}
+            }
 
         self._add_event(
             "operation_result",
@@ -861,6 +1224,31 @@ class MeshtasticManager:
             error=error,
             result=result,
             packet=packet,
+        )
+
+    def _record_operation_timeout(
+        self,
+        operation: str,
+        target: str,
+        telemetry_type: str | None,
+        response_holder: dict[str, Any],
+    ) -> None:
+        request_id = response_holder.get("request_id")
+        with self._lock:
+            if response_holder.get("completed"):
+                return
+            response_holder["completed"] = True
+            self._pending_node_responses.pop(request_id, None)
+        self._add_event(
+            "operation_result",
+            operation=operation,
+            target=target,
+            telemetry_type=telemetry_type,
+            request_packet_id=response_holder.get("packet_id"),
+            success=False,
+            error="TIMEOUT",
+            result={"timeout_seconds": DEFAULT_NODE_RESPONSE_TIMEOUT_SECONDS},
+            packet={},
         )
 
     def request_node_action(
@@ -881,6 +1269,8 @@ class MeshtasticManager:
             "traceroute",
             "telemetry",
             "position",
+            "user_info",
+            "neighbor_info",
             "favorite",
             "unfavorite",
             "ignore",
@@ -1030,10 +1420,15 @@ class MeshtasticManager:
                 raise RuntimeError(f"Remote node rejected the command: {ack_error}")
             return safe_packet
 
+        self._check_request_cooldown(action, node_id)
         if hop_limit is None:
             hop_limit = int(interface.localNode.localConfig.lora.hop_limit or 3)
 
-        response_holder: dict[str, Any] = {"packet_id": None}
+        response_holder: dict[str, Any] = {
+            "packet_id": None,
+            "request_id": uuid.uuid4().hex,
+            "completed": False,
+        }
 
         def on_response(packet: dict[str, Any]) -> None:
             self._record_operation_response(
@@ -1050,11 +1445,43 @@ class MeshtasticManager:
         elif action == "position":
             payload = mesh_pb2.Position()
             portnum = portnums_pb2.PortNum.POSITION_APP
+        elif action == "user_info":
+            payload = mesh_pb2.User()
+            raw_info = interface.getMyNodeInfo()
+            raw_user = raw_info.get("user") or {} if isinstance(raw_info, dict) else {}
+            user = (_safe(raw_info) or {}).get("user") or {}
+            public_user = {
+                key: value
+                for key, value in user.items()
+                if key
+                not in {
+                    "macaddr",
+                    "publicKey",
+                    "public_key",
+                }
+            }
+            with contextlib.suppress(Exception):
+                ParseDict(public_user, payload, ignore_unknown_fields=True)
+            for field_name, *keys in (
+                ("macaddr", "macaddr"),
+                ("public_key", "publicKey", "public_key"),
+            ):
+                raw_value = _pick(raw_user, *keys)
+                if isinstance(raw_value, bytes):
+                    setattr(payload, field_name, raw_value)
+            portnum = portnums_pb2.PortNum.NODEINFO_APP
+        elif action == "neighbor_info":
+            payload = mesh_pb2.NeighborInfo()
+            portnum = portnums_pb2.PortNum.NEIGHBORINFO_APP
         else:
-            payload = telemetry_pb2.Telemetry()
-            field_name = TELEMETRY_TYPES[telemetry_type]
-            getattr(payload, field_name).SetInParent()
-            portnum = portnums_pb2.PortNum.TELEMETRY_APP
+            if telemetry_type == "pax":
+                payload = paxcount_pb2.Paxcount()
+                portnum = portnums_pb2.PortNum.PAXCOUNTER_APP
+            else:
+                payload = telemetry_pb2.Telemetry()
+                field_name = TELEMETRY_TYPES[telemetry_type]
+                getattr(payload, field_name).SetInParent()
+                portnum = portnums_pb2.PortNum.TELEMETRY_APP
 
         with self._command_lock:
             packet = interface.sendData(
@@ -1068,6 +1495,7 @@ class MeshtasticManager:
             )
         safe_packet = _safe(packet)
         response_holder["packet_id"] = safe_packet.get("id")
+        self._start_request_cooldown(action, node_id)
         self._add_event(
             "operation_request",
             operation=action,
@@ -1077,6 +1505,21 @@ class MeshtasticManager:
             hop_limit=hop_limit,
             packet=safe_packet,
         )
+        timer = threading.Timer(
+            DEFAULT_NODE_RESPONSE_TIMEOUT_SECONDS,
+            self._record_operation_timeout,
+            args=(
+                action,
+                node_id,
+                telemetry_type if action == "telemetry" else None,
+                response_holder,
+            ),
+        )
+        timer.daemon = True
+        with self._lock:
+            if not response_holder["completed"]:
+                self._pending_node_responses[response_holder["request_id"]] = timer
+                timer.start()
         return safe_packet
 
     def _owner_values(self, node_id: str | None = None) -> dict[str, Any]:
@@ -1722,6 +2165,34 @@ class MeshtasticManager:
                 result["my_node"] = _safe(interface.getMyNodeInfo())
             with contextlib.suppress(Exception):
                 result["public_key"] = _safe(interface.getPublicKey())
+            radio_queue: dict[str, Any] = {}
+            queue_status = getattr(interface, "queueStatus", None)
+            if queue_status is not None:
+                free = getattr(queue_status, "free", None)
+                maximum = getattr(queue_status, "maxlen", None)
+                radio_queue = {
+                    "free": free,
+                    "max_length": maximum,
+                    "used": (
+                        max(0, int(maximum) - int(free))
+                        if free is not None and maximum is not None
+                        else None
+                    ),
+                }
+            pending_queue = getattr(interface, "queue", None)
+            with contextlib.suppress(Exception):
+                radio_queue["python_pending"] = (
+                    pending_queue.qsize()
+                    if hasattr(pending_queue, "qsize")
+                    else len(pending_queue)
+                )
+            with self._outbound_condition:
+                result["tx_queue"] = {
+                    "application_pending": len(self._outbound_messages),
+                    "active_client_id": self._outbound_active,
+                    "radio": radio_queue,
+                }
+        result["request_controls"] = self._request_control_status()
         return result
 
     def nodes(self) -> list[dict[str, Any]]:
@@ -1990,6 +2461,7 @@ class MeshtasticManager:
             self._disconnected_at = _now()
             self._disconnect_reason = "connection_lost"
             self._disconnect_detail = self._error
+        self._cancel_outbound_messages()
         self._add_event("error", message=self._error)
 
     def wait_until_settled(self, timeout: float = 10.0) -> str:
