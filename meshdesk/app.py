@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from meshdesk import __version__
@@ -334,6 +334,24 @@ def create_app(
     @api.get("/api/channel-slots")
     def channel_slots() -> dict:
         return {"channels": radio.channel_slots()}
+
+    @api.get("/api/channel-slots/{index}/psk", include_in_schema=False)
+    def channel_psk(index: int) -> JSONResponse:
+        try:
+            return JSONResponse(
+                radio.channel_psk(index),
+                headers={
+                    "Cache-Control": "no-store, max-age=0",
+                    "Pragma": "no-cache",
+                },
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc) or type(exc).__name__,
+            ) from exc
 
     @api.put("/api/channel-slots/{index}")
     def update_channel(index: int, request: ChannelUpdateRequest) -> dict:

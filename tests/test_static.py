@@ -87,6 +87,11 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert 'id="helpTooltip"' in page.text
     assert "clearDeviceBoundUi" in script.text
     assert "refreshChannelSlots" in script.text
+    assert "revealCurrentChannelPsk" in script.text
+    assert "secureRandomChannelPsk" in script.text
+    assert "Random AES-128" in script.text
+    assert "simple0–simple254" in script.text
+    assert "Custom PSK и потвърждението не съвпадат" in script.text
     assert "olderThanDay" in script.text
 
 

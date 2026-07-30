@@ -41,6 +41,17 @@ class StubManager:
             }
         ]
 
+    def channel_psk(self, index):
+        self.calls.append(("channel_psk", index))
+        return {
+            "index": index,
+            "psk_base64": "AQ==",
+            "psk_state": "default",
+            "byte_length": 1,
+            "publicly_known": True,
+            "encrypted": True,
+        }
+
     def update_channel(
         self,
         index,
@@ -304,6 +315,7 @@ def test_channel_manager_endpoints():
     manager = StubManager()
     with TestClient(create_app(manager)) as client:
         listing = client.get("/api/channel-slots")
+        revealed = client.get("/api/channel-slots/0/psk")
         updated = client.put(
             "/api/channel-slots/1",
             json={
@@ -318,8 +330,13 @@ def test_channel_manager_endpoints():
 
     assert listing.status_code == 200
     assert listing.json()["channels"][0]["role"] == "PRIMARY"
+    assert revealed.status_code == 200
+    assert revealed.json()["psk_base64"] == "AQ=="
+    assert revealed.headers["cache-control"] == "no-store, max-age=0"
+    assert revealed.headers["pragma"] == "no-cache"
     assert updated.status_code == 200
-    assert manager.calls[0] == (
+    assert manager.calls[0] == ("channel_psk", 0)
+    assert manager.calls[1] == (
         "channel",
         1,
         "SECONDARY",

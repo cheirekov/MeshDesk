@@ -861,7 +861,44 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   gap: 8px;
   margin-top: 16px;
 }
-.channel-editor .channel-custom-psk.hidden { display: none; }
+.channel-psk-workbench,
+.channel-current-psk {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  padding: 13px;
+  border: 1px solid #3c554c;
+  border-radius: 10px;
+  background: rgba(10, 25, 20, 0.7);
+}
+.channel-psk-workbench.hidden { display: none; }
+.channel-psk-workbench > .hidden { display: none; }
+.channel-current-psk > div:first-child,
+.channel-current-psk > input,
+.channel-current-psk > .channel-psk-status {
+  grid-column: 1 / -1;
+}
+.channel-current-psk p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.65rem;
+  line-height: 1.45;
+}
+.channel-psk-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.channel-psk-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font: 0.66rem/1.45 ui-monospace, monospace;
+}
+.channel-psk-status.secure { color: var(--green); }
+.channel-psk-status.warning { color: #dfbf77; }
+.channel-psk-status.danger { color: #ff9999; }
 
 .help-trigger {
   display: inline-grid;

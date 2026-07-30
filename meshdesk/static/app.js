@@ -65,8 +65,25 @@ function organizeWorkspace() {
   }
 }
 
+function clearCurrentChannelPskReveal() {
+  const input = $("#channelCurrentPsk");
+  if (!input) return;
+  input.value = "";
+  input.type = "password";
+  const status = $("#channelCurrentPskStatus");
+  if (status) {
+    status.textContent = "Скрит по подразбиране.";
+    status.className = "channel-psk-status";
+  }
+  const copyButton = $("#copyCurrentChannelPsk");
+  if (copyButton) copyButton.disabled = true;
+  const revealButton = $("#revealCurrentChannelPsk");
+  if (revealButton) revealButton.textContent = "Покажи текущия PSK";
+}
+
 function selectSettingsView(view) {
   const channels = view === "channels";
+  if (!channels) clearCurrentChannelPskReveal();
   $("#configSettingsView").classList.toggle("hidden", channels);
   $("#channelPanel").classList.toggle("hidden", !channels);
   $("#settingsConfigTab").classList.toggle("active", !channels);
@@ -2462,6 +2479,194 @@ async function refreshChannels() {
   }
 }
 
+function bytesToBase64(bytes) {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function parseChannelPsk(value) {
+  const raw = String(value || "").trim();
+  if (!raw) throw new Error("Въведи PSK");
+  if (raw.startsWith("0x")) {
+    const hex = raw.slice(2);
+    if (!hex || hex.length % 2 || !/^[0-9a-f]+$/i.test(hex)) {
+      throw new Error("Hex PSK трябва да съдържа четен брой hex знаци след 0x");
+    }
+    return Uint8Array.from(hex.match(/.{2}/g).map((part) => Number.parseInt(part, 16)));
+  }
+  const encoded = raw.startsWith("base64:") ? raw.slice(7) : raw;
+  if (
+    !encoded ||
+    encoded.length % 4 === 1 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)
+  ) {
+    throw new Error("PSK трябва да е валиден Base64 или 0x hex");
+  }
+  try {
+    const binary = atob(encoded);
+    const normalized = btoa(binary).replace(/=+$/, "");
+    if (encoded.replace(/=+$/, "") !== normalized) {
+      throw new Error("invalid base64");
+    }
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    throw new Error("PSK трябва да е валиден Base64 или 0x hex");
+  }
+}
+
+function channelPskAssessment(bytes, mode = "") {
+  if (mode === "none" || (bytes.length === 1 && bytes[0] === 0)) {
+    return { className: "danger", text: "Без криптиране · всеки може да прочете трафика" };
+  }
+  if (bytes.length === 1) {
+    return {
+      className: "warning",
+      text: "Публично известен Meshtastic marker · подходящ само за public/test канал",
+    };
+  }
+  if (bytes.length === 16) {
+    return { className: "secure", text: "AES-128 · защитен custom ключ" };
+  }
+  if (bytes.length === 32) {
+    return { className: "secure", text: "AES-256 · препоръчителен за private канал" };
+  }
+  return {
+    className: "danger",
+    text: `Невалиден размер: ${bytes.length} bytes · допустими са 1, 16 или 32`,
+  };
+}
+
+function secureRandomChannelPsk(size) {
+  const bytes = new Uint8Array(size);
+  crypto.getRandomValues(bytes);
+  return bytesToBase64(bytes);
+}
+
+function updateNewChannelPskStatus() {
+  const status = $("#channelPskStatus");
+  const mode = $("#channelPskMode").value;
+  const input = $("#channelPsk");
+  const confirmation = $("#channelPskConfirm");
+  try {
+    const bytes = parseChannelPsk(input.value);
+    const assessment = channelPskAssessment(bytes, mode);
+    input.setAttribute("aria-invalid", String(assessment.className === "danger"));
+    if (mode === "custom") {
+      if (!confirmation.value.trim()) {
+        confirmation.setAttribute("aria-invalid", "true");
+        status.className = "channel-psk-status warning";
+        status.textContent = `${assessment.text} · повтори ключа за потвърждение`;
+        return;
+      }
+      const repeated = parseChannelPsk(confirmation.value);
+      const matches =
+        bytes.length === repeated.length &&
+        bytes.every((value, index) => value === repeated[index]);
+      confirmation.setAttribute("aria-invalid", String(!matches));
+      if (!matches) {
+        status.className = "channel-psk-status danger";
+        status.textContent = "Custom PSK и потвърждението не съвпадат";
+        return;
+      }
+    } else {
+      confirmation.removeAttribute("aria-invalid");
+    }
+    status.className = `channel-psk-status ${assessment.className}`;
+    status.textContent = `${assessment.text} · ${bytes.length} bytes${
+      mode === "custom" ? " · потвърден" : ""
+    }`;
+  } catch (error) {
+    input.setAttribute("aria-invalid", "true");
+    if (mode === "custom") confirmation.setAttribute("aria-invalid", "true");
+    status.className = "channel-psk-status danger";
+    status.textContent = error.message;
+  }
+}
+
+function configureChannelPskEditor({ reset = false } = {}) {
+  const mode = $("#channelPskMode").value;
+  const workbench = $("#channelPskWorkbench");
+  const input = $("#channelPsk");
+  const simpleRow = $("#channelSimpleRow");
+  const confirmRow = $("#channelPskConfirmRow");
+  const generateButton = $("#generateChannelPsk");
+  workbench.classList.toggle("hidden", mode === "unchanged");
+  if (mode === "unchanged") return;
+
+  simpleRow.classList.toggle("hidden", mode !== "simple");
+  confirmRow.classList.toggle("hidden", mode !== "custom");
+  generateButton.classList.toggle(
+    "hidden",
+    !["random128", "random256"].includes(mode),
+  );
+  input.readOnly = mode !== "custom";
+  input.placeholder =
+    mode === "custom" ? "Base64, base64:… или 0x…" : "Base64 PSK";
+
+  if (reset) {
+    if (mode === "random256") input.value = secureRandomChannelPsk(32);
+    else if (mode === "random128") input.value = secureRandomChannelPsk(16);
+    else if (mode === "default") input.value = "AQ==";
+    else if (mode === "none") input.value = "AA==";
+    else if (mode === "simple") {
+      input.value = bytesToBase64(
+        Uint8Array.of(Number($("#channelSimpleIndex").value) + 1),
+      );
+    } else input.value = "";
+    $("#channelPskConfirm").value = "";
+  }
+  updateNewChannelPskStatus();
+}
+
+async function copyChannelSecret(value, label = "PSK") {
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    toast(`${label} е копиран. Изчисти clipboard-а след споделяне.`);
+  } catch {
+    toast("Браузърът не разреши достъп до clipboard", true);
+  }
+}
+
+async function revealCurrentChannelPsk(slot) {
+  const input = $("#channelCurrentPsk");
+  const button = $("#revealCurrentChannelPsk");
+  const copyButton = $("#copyCurrentChannelPsk");
+  const status = $("#channelCurrentPskStatus");
+  if (input.value) {
+    input.value = "";
+    input.type = "password";
+    status.textContent = "Текущият ключ е скрит и премахнат от UI паметта.";
+    status.className = "channel-psk-status";
+    copyButton.disabled = true;
+    button.textContent = "Покажи текущия PSK";
+    return;
+  }
+  if (
+    !confirm(
+      `Да покажа текущия PSK за channel ${slot.index}? Всеки с този ключ може да чете трафика на канала.`,
+    )
+  ) {
+    return;
+  }
+  try {
+    const data = await api(`/api/channel-slots/${slot.index}/psk`, {
+      cache: "no-store",
+    });
+    input.value = data.psk_base64;
+    input.type = "text";
+    const assessment = channelPskAssessment(
+      parseChannelPsk(data.psk_base64 || "AA=="),
+      data.encrypted ? "" : "none",
+    );
+    status.className = `channel-psk-status ${assessment.className}`;
+    status.textContent = `${assessment.text} · Base64 · ${data.psk_state}`;
+    copyButton.disabled = false;
+    button.textContent = "Скрий текущия PSK";
+  } catch (error) {
+    toast(`PSK: ${error.message}`, true);
+  }
+}
+
 function renderChannelEditor(slot) {
   const form = $("#channelEditor");
   if (!slot) {
@@ -2513,24 +2718,18 @@ function renderChannelEditor(slot) {
       </label>
       <label>
         <span class="config-field-label">PSK действие ${helpTrigger(
-          "Запази текущия не чете и не променя ключа. Random създава нов 256-bit PSK; custom приема 128/256-bit hex или base64.",
+          "За private канал използвай random AES-256 или AES-128. Default и simple са публично известни ключове, а none не криптира трафика.",
           "Помощ за channel PSK",
         )}</span>
         <select id="channelPskMode">
-          <option value="unchanged">Запази текущия</option>
-          <option value="random" ${slot.enabled ? "" : "selected"}>Нов random 256-bit</option>
-          <option value="default">Meshtastic default</option>
+          <option value="unchanged" ${slot.enabled ? "" : "disabled"}>Запази текущия</option>
+          <option value="random256" ${slot.enabled ? "" : "selected"}>Random AES-256 · препоръчително</option>
+          <option value="random128">Random AES-128 · по-кратък</option>
+          <option value="custom">Custom Base64 / hex</option>
+          <option value="simple">Simple 0–254 · публичен/слаб</option>
+          <option value="default">Meshtastic default · публичен/слаб</option>
           <option value="none">Без криптиране</option>
-          <option value="custom">Custom hex/base64</option>
         </select>
-      </label>
-      <label class="channel-custom-psk hidden">
-        <span class="config-field-label">Custom PSK ${helpTrigger(
-          "Тайна 16/32-byte стойност във формат 0x… или base64:…. MeshDesk не я записва в audit log и не я връща след save.",
-          "Помощ за custom PSK",
-        )}</span>
-        <input id="channelPsk" type="password" autocomplete="new-password"
-          placeholder="0x… или base64:…">
       </label>
       <label>
         <span class="config-field-label">Position precision ${helpTrigger(
@@ -2560,9 +2759,68 @@ function renderChannelEditor(slot) {
           )}
         </label>
       </div>
+      <div id="channelPskWorkbench" class="channel-psk-workbench wide hidden">
+        <label id="channelSimpleRow" class="hidden">
+          <span class="config-field-label">Simple key ${helpTrigger(
+            "simple0–simple254 са compact protobuf markers за публично известни AES-128 ключове. Те не осигуряват private комуникация.",
+            "Помощ за simple PSK",
+          )}</span>
+          <select id="channelSimpleIndex">
+            ${Array.from(
+              { length: 255 },
+              (_, index) => `<option value="${index}">simple${index}</option>`,
+            ).join("")}
+          </select>
+        </label>
+        <label>
+          <span class="config-field-label">Нов PSK / preview ${helpTrigger(
+            "Показва точната Base64 стойност за споделяне. При custom може да въведеш Base64, base64:… или 0x hex; допустими са 1, 16 и 32 bytes.",
+            "Помощ за PSK preview",
+          )}</span>
+          <input id="channelPsk" type="password" autocomplete="off"
+            autocapitalize="none" spellcheck="false">
+        </label>
+        <label id="channelPskConfirmRow" class="hidden">
+          Потвърди custom PSK
+          <input id="channelPskConfirm" type="password" autocomplete="off"
+            autocapitalize="none" spellcheck="false">
+        </label>
+        <div class="channel-psk-actions">
+          <button id="generateChannelPsk" type="button" class="ghost hidden">
+            Генерирай отново
+          </button>
+          <button id="toggleChannelPsk" type="button" class="ghost">Покажи</button>
+          <button id="copyChannelPsk" type="button" class="ghost">Копирай Base64</button>
+        </div>
+        <p id="channelPskStatus" class="channel-psk-status"></p>
+      </div>
+      ${
+        slot.enabled
+          ? `<div class="channel-current-psk wide">
+              <div>
+                <strong>Текущ PSK</strong>
+                <p>Не се зарежда автоматично. Reveal отговаря с no-store и стойността
+                  се изчиства при hide, смяна на slot или disconnect.</p>
+              </div>
+              <input id="channelCurrentPsk" type="password" readonly
+                autocomplete="off" aria-label="Текущ PSK в Base64">
+              <div class="channel-psk-actions">
+                <button id="revealCurrentChannelPsk" type="button" class="ghost">
+                  Покажи текущия PSK
+                </button>
+                <button id="copyCurrentChannelPsk" type="button" class="ghost" disabled>
+                  Копирай Base64
+                </button>
+              </div>
+              <p id="channelCurrentPskStatus" class="channel-psk-status">
+                Скрит по подразбиране.
+              </p>
+            </div>`
+          : ""
+      }
       <p class="channel-secret-note wide">
-        MeshDesk не чете съществуващия PSK. „Запази текущия“ не променя ключа.
-        Random/custom ключът трябва да бъде конфигуриран и на останалите участници.
+        Името и PSK трябва да съвпадат при всички участници. Ключът не се записва
+        в audit/history или browser storage. Clipboard-ът остава отговорност на оператора.
       </p>
     </div>
     <div class="channel-editor-actions">
@@ -2570,11 +2828,39 @@ function renderChannelEditor(slot) {
     </div>`;
   initHelpTips(form);
   $("#channelPskMode").addEventListener("change", () => {
-    $(".channel-custom-psk").classList.toggle(
-      "hidden",
-      $("#channelPskMode").value !== "custom",
-    );
+    configureChannelPskEditor({ reset: true });
   });
+  $("#channelSimpleIndex").addEventListener("change", () =>
+    configureChannelPskEditor({ reset: true }),
+  );
+  $("#channelPsk").addEventListener("input", updateNewChannelPskStatus);
+  $("#channelPskConfirm").addEventListener("input", updateNewChannelPskStatus);
+  $("#generateChannelPsk").addEventListener("click", () =>
+    configureChannelPskEditor({ reset: true }),
+  );
+  $("#toggleChannelPsk").addEventListener("click", () => {
+    const visible = $("#channelPsk").type === "text";
+    $("#channelPsk").type = visible ? "password" : "text";
+    $("#channelPskConfirm").type = visible ? "password" : "text";
+    $("#toggleChannelPsk").textContent = visible ? "Покажи" : "Скрий";
+  });
+  $("#copyChannelPsk").addEventListener("click", () => {
+    try {
+      const base64 = bytesToBase64(parseChannelPsk($("#channelPsk").value));
+      copyChannelSecret(base64, "PSK preview");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+  if (slot.enabled) {
+    $("#revealCurrentChannelPsk").addEventListener("click", () =>
+      revealCurrentChannelPsk(slot),
+    );
+    $("#copyCurrentChannelPsk").addEventListener("click", () =>
+      copyChannelSecret($("#channelCurrentPsk").value, "Текущият PSK"),
+    );
+  }
+  configureChannelPskEditor({ reset: !slot.enabled });
 }
 
 function renderChannelSlots(slots) {
@@ -2640,6 +2926,38 @@ async function refreshChannelSlots() {
   }
 }
 
+function channelPskPayload() {
+  const mode = $("#channelPskMode").value;
+  if (["unchanged", "default", "none"].includes(mode)) {
+    return { psk_mode: mode, psk: "" };
+  }
+  if (mode === "simple") {
+    return {
+      psk_mode: "custom",
+      psk: `simple${Number($("#channelSimpleIndex").value)}`,
+    };
+  }
+  const bytes = parseChannelPsk($("#channelPsk").value);
+  const allowedSizes = mode === "random128" ? [16] : mode === "random256" ? [32] : [1, 16, 32];
+  if (!allowedSizes.includes(bytes.length)) {
+    throw new Error(
+      mode === "custom"
+        ? "Custom PSK трябва да е 1, 16 или 32 bytes"
+        : `Генерираният PSK трябва да е ${allowedSizes[0]} bytes`,
+    );
+  }
+  if (mode === "custom") {
+    const confirmation = parseChannelPsk($("#channelPskConfirm").value);
+    if (
+      bytes.length !== confirmation.length ||
+      !bytes.every((value, index) => value === confirmation[index])
+    ) {
+      throw new Error("Custom PSK и потвърждението не съвпадат");
+    }
+  }
+  return { psk_mode: "custom", psk: `base64:${bytesToBase64(bytes)}` };
+}
+
 async function saveChannel(event) {
   event.preventDefault();
   const slot = state.channelSlots.find(
@@ -2648,9 +2966,19 @@ async function saveChannel(event) {
   if (!slot) return;
   const role = $("#channelRole").value;
   const destructive = role === "DISABLED";
+  let pskPayload = { psk_mode: "unchanged", psk: "" };
+  if (!destructive) {
+    try {
+      pskPayload = channelPskPayload();
+    } catch (error) {
+      toast(error.message, true);
+      return;
+    }
+  }
+  const pskLabel = $("#channelPskMode").selectedOptions[0]?.textContent || "";
   const promptText = destructive
     ? `Да премахна channel ${slot.index} „${slot.display_name}“? Следващите Secondary slots могат да бъдат пренаредени от firmware-а.`
-    : `Да запиша channel ${slot.index}? Участниците с различно име/PSK няма да могат да го използват.`;
+    : `Да запиша channel ${slot.index} с PSK режим „${pskLabel}“? Участниците с различно име/PSK няма да могат да го използват.`;
   if (!confirm(promptText)) return;
   try {
     await api(`/api/channel-slots/${slot.index}`, {
@@ -2658,8 +2986,7 @@ async function saveChannel(event) {
       body: JSON.stringify({
         role,
         name: $("#channelName").value,
-        psk_mode: $("#channelPskMode").value,
-        psk: $("#channelPsk")?.value || "",
+        ...pskPayload,
         uplink_enabled: $("#channelUplink").checked,
         downlink_enabled: $("#channelDownlink").checked,
         position_precision: Number($("#channelPositionPrecision").value || 0),
@@ -3400,6 +3727,20 @@ document.querySelector(".settings-tabs").addEventListener("keydown", (event) => 
         : $("#settingsChannelsTab").getAttribute("aria-selected") !== "true";
   selectSettingsView(channels ? "channels" : "config");
   $(channels ? "#settingsChannelsTab" : "#settingsConfigTab").focus();
+});
+$("#configPanel").addEventListener("toggle", () => {
+  if (!$("#configPanel").open) clearCurrentChannelPskReveal();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearCurrentChannelPskReveal();
+    const newPsk = $("#channelPsk");
+    const confirmation = $("#channelPskConfirm");
+    if (newPsk) newPsk.type = "password";
+    if (confirmation) confirmation.type = "password";
+    const toggle = $("#toggleChannelPsk");
+    if (toggle) toggle.textContent = "Покажи";
+  }
 });
 $("#reloadChannels").addEventListener("click", () =>
   Promise.all([refreshChannelSlots(), refreshChannels()]),

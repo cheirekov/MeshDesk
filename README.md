@@ -98,9 +98,11 @@ timeout, отметни **Забрави старото сдвояване** и 
 Табът **Настройки → Primary и Secondary канали** показва всички slots, включително
 disabled. От нея могат да се добавят, редактират и премахват Secondary канали,
 да се промени името, MQTT uplink/downlink и position precision, както и да се
-запази или замени PSK. Съществуващият ключ никога не се връща към браузъра или
-логовете. Slot 0 остава PRIMARY, а нов Secondary се добавя само в първия
-свободен slot. Подробности: [Channel Manager](docs/CHANNEL-MANAGER.md).
+запази или замени PSK. Ключът е скрит по подразбиране, но може да бъде показан
+и копиран чрез explicit `no-store` reveal за локално свързаното радио. Не се
+записва в browser storage, audit events или history logs. Slot 0 остава PRIMARY,
+а нов Secondary се добавя само в първия свободен slot. Подробности:
+[Channel Manager](docs/CHANNEL-MANAGER.md).
 
 При прекъсване на връзката device-bound изгледите за разговори, канали,
 конфигурация и администрация се изчистват, без да се трие криптираната история.

@@ -441,6 +441,28 @@ def test_channel_manager_lists_all_slots_without_exposing_psk():
     assert slots[2]["editable"] is False
 
 
+def test_channel_psk_is_revealed_only_by_explicit_method_without_audit_event():
+    manager, interface = connected_manager()
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.name = "Main"
+    primary.settings.psk = b"\x01"
+    interface.localNode.channels = [primary]
+    event_count = len(manager.events())
+
+    revealed = manager.channel_psk(0)
+
+    assert revealed == {
+        "index": 0,
+        "psk_base64": "AQ==",
+        "psk_state": "default",
+        "byte_length": 1,
+        "publicly_known": True,
+        "encrypted": True,
+    }
+    assert len(manager.events()) == event_count
+    assert "psk_base64" not in manager.channel_slots()[0]
+
+
 def test_channel_manager_adds_updates_and_disables_secondary_channel():
     manager, interface = connected_manager()
     primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
@@ -479,6 +501,38 @@ def test_channel_manager_adds_updates_and_disables_secondary_channel():
     )
     assert interface.localNode.written[-1] == ("delete_channel", 1)
     assert manager.channel_slots()[1]["enabled"] is False
+
+
+def test_channel_manager_accepts_simple_marker_and_custom_aes128():
+    manager, interface = connected_manager()
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.name = "Main"
+    interface.localNode.channels = [primary]
+
+    manager.update_channel(
+        0,
+        "PRIMARY",
+        "Main",
+        "custom",
+        "simple15",
+        False,
+        False,
+        0,
+    )
+    assert interface.localNode.channels[0].settings.psk == b"\x10"
+    assert manager.channel_slots()[0]["psk_state"] == "simple15"
+
+    manager.update_channel(
+        0,
+        "PRIMARY",
+        "Main",
+        "custom",
+        "base64:AAECAwQFBgcICQoLDA0ODw==",
+        False,
+        False,
+        0,
+    )
+    assert interface.localNode.channels[0].settings.psk == bytes(range(16))
 
 
 def test_config_schema_hides_secret_and_updates_section():

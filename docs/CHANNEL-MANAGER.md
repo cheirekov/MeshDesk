@@ -16,19 +16,30 @@ Secondary канали**, отделно от protobuf radio/module формат
 
 ## PSK handling
 
-MeshDesk никога не връща съществуващия PSK към браузъра. UI получава само
-състояние: `unencrypted`, `default`, `simpleN` или `secret`.
+Обикновеният channel list никога не съдържа PSK. UI получава само състояние:
+`unencrypted`, `default`, `simpleN` или `secret`. При изрично
+**Покажи текущия PSK** локалният API връща Base64 стойността с `no-store`;
+стойността не се audit-ва, не влиза в history и се изчиства при hide, смяна на
+slot/tab, затваряне на Settings, скриване на browser прозореца или disconnect.
 
 При запис операторът избира:
 
 - **Запази текущия** — bytes полето не се променя;
-- **Нов random 256-bit** — генерира се локално от Meshtastic Python;
-- **Meshtastic default**;
+- **Random AES-256** — препоръчителен за private channel;
+- **Random AES-128** — по-кратък, но валиден secure key;
+- **Meshtastic default** — публично известен ключ;
+- **simple0–simple254** — compact markers за публично известни ключове;
 - **Без криптиране**;
-- **Custom** — 16/32-byte `0x…` или `base64:…`.
+- **Custom** — 1/16/32-byte Base64 или `0x…`, с повторно въвеждане.
 
+Random ключовете се генерират с Web Crypto CSPRNG и се показват като Base64
+preview преди save. Има show/hide, regenerate, live size validation и copy.
 Новият ключ трябва да се приложи отделно на всички участници. MeshDesk не го
-записва в audit събитията и не го връща в API response.
+записва в audit събитията, browser storage или encrypted chat history.
+
+`default` и `simpleN` не са private: ключовете им са публикувани в Meshtastic
+source и служат за public/test channels. Еднобайтовата стойност е protocol
+marker, а не реален еднобайтов AES key.
 
 ## Граници на първата версия
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import re
@@ -474,6 +475,33 @@ class MeshtasticManager:
             )
         return result
 
+    def channel_psk(self, index: int) -> dict[str, Any]:
+        if not 0 <= index <= 7:
+            raise ValueError("Channel index must be between 0 and 7")
+        interface = self._connected_interface()
+        with self._lock:
+            channel = next(
+                (
+                    item
+                    for item in list(interface.localNode.channels or [])
+                    if item.index == index
+                ),
+                None,
+            )
+            if channel is None or channel.Role.Name(channel.role) == "DISABLED":
+                raise ValueError(f"Active channel slot {index} is not available")
+            raw_psk = bytes(channel.settings.psk)
+
+        psk_state = pskToString(raw_psk)
+        return {
+            "index": index,
+            "psk_base64": base64.b64encode(raw_psk).decode("ascii"),
+            "psk_state": psk_state,
+            "byte_length": len(raw_psk),
+            "publicly_known": len(raw_psk) <= 1,
+            "encrypted": psk_state != "unencrypted",
+        }
+
     def update_channel(
         self,
         index: int,
@@ -567,11 +595,12 @@ class MeshtasticManager:
             if effective_psk_mode == "custom":
                 parsed_psk = fromPSK(psk.strip())
                 if not isinstance(parsed_psk, bytes) or len(parsed_psk) not in {
+                    1,
                     16,
                     32,
                 }:
                     raise ValueError(
-                        "Custom PSK must be 16/32-byte 0x hex or base64 data"
+                        "Custom PSK must be a 1/16/32-byte marker, hex, or base64 value"
                     )
                 candidate.settings.psk = parsed_psk
             elif effective_psk_mode != "unchanged":

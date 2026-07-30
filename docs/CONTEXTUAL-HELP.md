@@ -34,6 +34,21 @@ Field-level registry описва познатите полета от теку�
 Destructive операциите продължават да използват постоянен warning и explicit
 confirmation. Tooltip не е единствената защита.
 
+## Channel PSK
+
+Channel editor-ът показва PSK само при изрично действие:
+
+- новият random/custom ключ има masked Base64 preview, reveal и copy;
+- custom стойността се валидира при писане и се въвежда повторно;
+- текущият записан ключ се зарежда с отделен `no-store` request;
+- стойността не се пази в local/session storage, audit или history;
+- hide, смяна на slot/tab, затваряне/скриване и disconnect премахват стойността
+  от UI.
+
+AES-256 и AES-128 са private варианти. `default` и `simple0–simple254` са
+публично известни keys за public/test channels, а `none` не използва
+криптиране.
+
 ## Sources
 
 Описанията следват текущата official Meshtastic документация за
