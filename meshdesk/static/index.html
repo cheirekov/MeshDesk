@@ -233,40 +233,6 @@
         </div>
       </section>
 
-      <details id="channelPanel" class="panel channel-panel">
-        <summary>
-          <div>
-            <p class="eyebrow">КАНАЛИ</p>
-            <h2>Primary и Secondary
-              <span class="help-trigger" tabindex="0" role="button"
-                aria-label="Помощ за Channel Manager"
-                data-help="Primary е основният slot 0. Secondary каналите са допълнителни разговори. Името и PSK трябва да съвпадат при всички участници.">i</span>
-            </h2>
-          </div>
-          <span class="details-hint">Покажи</span>
-        </summary>
-        <div class="channel-panel-body">
-          <div class="channel-manager-intro">
-            <div>
-              <strong>Channel Manager</strong>
-              <p>Управлява локално свързаното радио. Тайният PSK никога не се
-                прочита или показва; може да бъде запазен, заменен или изключен.</p>
-            </div>
-            <button id="reloadChannels" type="button" class="ghost" disabled>
-              Презареди
-            </button>
-          </div>
-          <div class="channel-manager-layout">
-            <nav id="channelSlotList" class="channel-slot-list empty-state">
-              Свържи устройство, за да заредиш channel slots.
-            </nav>
-            <form id="channelEditor" class="channel-editor empty-state">
-              Избери channel slot.
-            </form>
-          </div>
-        </div>
-      </details>
-
       <section class="panel nodes-panel">
         <div class="section-title">
           <div>
@@ -360,6 +326,9 @@
           <div class="admin-toolbar">
             <label>
               Управлявано устройство
+              <span class="help-trigger" tabindex="0" role="button"
+                aria-label="Помощ за административната цел"
+                data-help="Локално радио изпълнява командата директно. Remote node изисква предварително разрешен public key и валидна PKI admin сесия.">i</span>
               <select id="adminTarget" disabled>
                 <option value="">Локално радио</option>
               </select>
@@ -372,7 +341,11 @@
           <div class="admin-grid">
             <article class="admin-card">
               <div>
-                <h3>Рестартиране</h3>
+                <h3>Рестартиране
+                  <span class="help-trigger" tabindex="0" role="button"
+                    aria-label="Помощ за рестартиране"
+                    data-help="Изпраща reboot команда с 10 секунди отлагане. Конфигурацията и NodeDB се запазват, но активната връзка временно ще прекъсне.">i</span>
+                </h3>
                 <p>Радиото ще се рестартира след 10 секунди. Настройките се запазват.</p>
               </div>
               <button type="button" class="secondary admin-action"
@@ -381,7 +354,11 @@
 
             <article class="admin-card">
               <div>
-                <h3>Изключване</h3>
+                <h3>Изключване
+                  <span class="help-trigger" tabindex="0" role="button"
+                    aria-label="Помощ за изключване"
+                    data-help="Изпраща shutdown команда с 10 секунди отлагане. Работи само при хардуер и firmware, които поддържат софтуерно изключване.">i</span>
+                </h3>
                 <p>Поддържа се само от устройства, които могат да се изключат софтуерно.</p>
               </div>
               <button type="button" class="secondary admin-action"
@@ -390,12 +367,19 @@
 
             <article class="admin-card admin-card-wide">
               <div>
-                <h3>Изчистване на NodeDB</h3>
+                <h3>Изчистване на NodeDB
+                  <span class="help-trigger" tabindex="0" role="button"
+                    aria-label="Помощ за изчистване на NodeDB"
+                    data-help="Премахва научените peer записи, но не променя каналите и radio конфигурацията. Възлите ще се появят отново, когато бъдат чути.">i</span>
+                </h3>
                 <p>Премахва научените възли. При локалното радио MeshDesk може да
                   възстанови списъците с любими и игнорирани.</p>
                 <label class="checkbox admin-preserve">
                   <input id="preserveNodePreferences" type="checkbox" checked>
                   Запази любими и игнорирани възли
+                  <span class="help-trigger" tabindex="0" role="button"
+                    aria-label="Помощ за запазване на предпочитанията"
+                    data-help="MeshDesk запомня local favorite/ignore флаговете преди reset и ги прилага отново. Не е достъпно за remote NodeDB, защото тя не може да бъде прочетена предварително.">i</span>
                 </label>
                 <p id="preserveNodePreferencesHint" class="admin-inline-note"></p>
               </div>
@@ -405,7 +389,11 @@
 
             <article class="admin-card danger-zone">
               <div>
-                <h3>Нулиране на настройките</h3>
+                <h3>Нулиране на настройките
+                  <span class="help-trigger" tabindex="0" role="button"
+                    aria-label="Помощ за нулиране на настройките"
+                    data-help="Връща radio и module конфигурацията към firmware defaults. Може да промени region, channels и transport достъпа; NodeDB не се третира като пълен device wipe.">i</span>
+                </h3>
                 <p>Връща конфигурацията към фабричните стойности.</p>
               </div>
               <button type="button" class="danger-outline admin-action"
@@ -414,7 +402,11 @@
 
             <article class="admin-card danger-zone">
               <div>
-                <h3>Пълно фабрично нулиране</h3>
+                <h3>Пълно фабрично нулиране
+                  <span class="help-trigger" tabindex="0" role="button"
+                    aria-label="Помощ за пълно фабрично нулиране"
+                    data-help="Изтрива конфигурацията и локалните данни на устройството. След операцията ще е необходимо ново първоначално конфигуриране и вероятно ново сдвояване.">i</span>
+                </h3>
                 <p>Изтрива конфигурацията и данните на устройството. Операцията е необратима.</p>
               </div>
               <button type="button" class="danger admin-action"
@@ -435,15 +427,32 @@
             <h2>Конфигурация на устройството
               <span class="help-trigger" tabindex="0" role="button"
                 aria-label="Помощ за конфигурацията"
-                data-help="Radio и module секциите се записват директно. Използвай постоянните предупреждения и section guidance преди промени по LoRa, Network, Bluetooth или Security.">i</span>
+                data-help="Тук са radio/module конфигурацията и Channel Manager. Настройките се записват директно; прегледай помощта и предупрежденията преди промяна.">i</span>
             </h2>
           </div>
           <span class="details-hint">Покажи</span>
         </summary>
         <div class="config-panel-body">
+        <div class="settings-tabs" role="tablist" aria-label="Настройки">
+          <button id="settingsConfigTab" type="button" class="settings-tab active"
+            role="tab" aria-selected="true" aria-controls="configSettingsView"
+            tabindex="0">
+            Radio и модули
+          </button>
+          <button id="settingsChannelsTab" type="button" class="settings-tab"
+            role="tab" aria-selected="false" aria-controls="channelPanel"
+            tabindex="-1">
+            Primary и Secondary канали
+          </button>
+        </div>
+        <section id="configSettingsView" class="settings-view" role="tabpanel"
+          aria-labelledby="settingsConfigTab">
         <div class="config-toolbar">
           <label>
             Управлявано устройство
+            <span class="help-trigger" tabindex="0" role="button"
+              aria-label="Помощ за управляваното устройство"
+              data-help="Празната стойност е директно свързаното радио. Избран remote node използва PKI admin и първо трябва да заредиш желаната секция.">i</span>
             <select id="configTarget" disabled>
               <option value="">Локално радио</option>
             </select>
@@ -500,6 +509,32 @@
             Избери секция.
           </form>
         </div>
+        </section>
+        <section id="channelPanel" class="settings-view hidden" role="tabpanel"
+          aria-labelledby="settingsChannelsTab">
+          <div class="channel-manager-intro">
+            <div>
+              <strong>Channel Manager
+                <span class="help-trigger" tabindex="0" role="button"
+                  aria-label="Помощ за Channel Manager"
+                  data-help="Primary е основният slot 0. Secondary каналите са допълнителни разговори. Името и PSK трябва да съвпадат при всички участници.">i</span>
+              </strong>
+              <p>Управлява локално свързаното радио. Тайният PSK никога не се
+                прочита или показва; може да бъде запазен, заменен или изключен.</p>
+            </div>
+            <button id="reloadChannels" type="button" class="ghost" disabled>
+              Презареди
+            </button>
+          </div>
+          <div class="channel-manager-layout">
+            <nav id="channelSlotList" class="channel-slot-list empty-state">
+              Свържи устройство, за да заредиш channel slots.
+            </nav>
+            <form id="channelEditor" class="channel-editor empty-state">
+              Избери channel slot.
+            </form>
+          </div>
+        </section>
         </div>
       </details>
     </main>

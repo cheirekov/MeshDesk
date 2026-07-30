@@ -31,6 +31,7 @@ const state = {
 };
 
 const $ = (selector) => document.querySelector(selector);
+const initializedHelpTriggers = new WeakSet();
 const statusLabels = {
   disconnected: "Изключено",
   connecting: "Свързване…",
@@ -64,6 +65,21 @@ function organizeWorkspace() {
   }
 }
 
+function selectSettingsView(view) {
+  const channels = view === "channels";
+  $("#configSettingsView").classList.toggle("hidden", channels);
+  $("#channelPanel").classList.toggle("hidden", !channels);
+  $("#settingsConfigTab").classList.toggle("active", !channels);
+  $("#settingsChannelsTab").classList.toggle("active", channels);
+  $("#settingsConfigTab").setAttribute("aria-selected", String(!channels));
+  $("#settingsChannelsTab").setAttribute("aria-selected", String(channels));
+  $("#settingsConfigTab").tabIndex = channels ? -1 : 0;
+  $("#settingsChannelsTab").tabIndex = channels ? 0 : -1;
+  if (channels && state.connection === "connected") {
+    Promise.all([refreshChannelSlots(), refreshChannels()]);
+  }
+}
+
 function positionHelpTooltip(trigger) {
   const tooltip = $("#helpTooltip");
   const rect = trigger.getBoundingClientRect();
@@ -85,8 +101,10 @@ function hideHelpTooltip() {
   $("#helpTooltip").classList.add("hidden");
 }
 
-function initHelpTips() {
-  document.querySelectorAll("[data-help]").forEach((trigger) => {
+function initHelpTips(root = document) {
+  root.querySelectorAll("[data-help]").forEach((trigger) => {
+    if (initializedHelpTriggers.has(trigger)) return;
+    initializedHelpTriggers.add(trigger);
     trigger.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -235,6 +253,242 @@ const configSectionGuidance = {
     bullets: ["Използвай custom channel PSK за частен трафик.", "Downlink към натоварен topic може да претовари локалната мрежа."],
   },
 };
+
+const configFieldHelp = {
+  owner: {
+    long_name: "Пълното име на възела, показвано в списъците и NodeInfo пакетите.",
+    short_name: "Кратък идентификатор до 4 знака за тесни екрани и компактни изгледи.",
+    is_licensed:
+      "Маркира amateur-radio режим. Използвай само при валидно разрешително и спазвай местните изисквания, включително ограниченията за криптиране.",
+    is_unmessagable:
+      "Обявява, че възелът не приема лични съобщения. Полезно за инфраструктурни или еднопосочни nodes.",
+  },
+  device: {
+    role: "Определя routing, power и broadcast поведението. CLIENT е безопасният избор за повечето устройства; използвай Role Advisor за сравнение.",
+    button_gpio:
+      "GPIO номер за потребителски бутон, когато платката няма предварително зададен такъв. Неправилен pin може да конфликтува с дисплей, GPS или LoRa хардуер.",
+    buzzer_gpio:
+      "GPIO номер за PWM buzzer, когато няма board default. Провери pinout-а и дали pin-ът поддържа необходимия изход.",
+    rebroadcast_mode:
+      "Филтрира кои пакети възелът препредава. LOCAL_ONLY ограничава до познатите канали; KNOWN_ONLY изисква и познат node в NodeDB.",
+    node_info_broadcast_secs:
+      "Секунди между периодичните NodeInfo пакети с име и идентичност. По-кратък интервал увеличава airtime; стандартно е рядко излъчване.",
+    double_tap_as_button_press:
+      "При поддържан accelerometer третира двойно почукване като натискане на потребителския бутон.",
+    disable_triple_click:
+      "Изключва стандартното тройно натискане на бутона за включване или изключване на GPS.",
+    tzdef:
+      "POSIX TZ string за локалното време на екрана и в логовете, например EET-2EEST,M3.5.0/3,M10.5.0/4 за България.",
+    led_heartbeat_disabled:
+      "Спира периодичното премигване на status LED. Не изключва непременно останалите индикации на платката.",
+    buzzer_mode:
+      "Определя кога firmware използва buzzer-а. Ефектът зависи от наличния хардуер и избрания buzzer GPIO.",
+  },
+  position: {
+    position_broadcast_secs:
+      "Базов интервал в секунди за изпращане на позиция. Кратките интервали използват повече airtime и батерия.",
+    position_broadcast_smart_enabled:
+      "Изпраща позиция според движение, изминато разстояние и minimum interval, вместо само по фиксиран таймер.",
+    fixed_position:
+      "Обявява последно зададената позиция като постоянна. Подходящо само за неподвижно и точно позиционирано устройство.",
+    gps_update_interval:
+      "Интервал за GPS опресняване. По-честото обновяване подобрява актуалността, но увеличава консумацията.",
+    position_flags:
+      "Bitmask кои допълнителни данни да влизат в position пакетите. Повече полета означават по-голям LoRa payload.",
+    rx_gpio: "GPIO RX за външен GPS serial интерфейс. Провери pinout и voltage levels.",
+    tx_gpio: "GPIO TX за външен GPS serial интерфейс. Провери pinout и voltage levels.",
+    broadcast_smart_minimum_distance:
+      "Минимално изминато разстояние преди smart position broadcast.",
+    broadcast_smart_minimum_interval_secs:
+      "Минимално време между smart position пакетите, независимо от движението.",
+    gps_en_gpio:
+      "GPIO за включване на захранването на външен GPS. Неправилен pin може да остави GPS изключен или постоянно включен.",
+    gps_mode:
+      "Режим на GPS приемника. Disabled спира GPS; Enabled управлява го нормално; Not present указва липсващ GPS хардуер.",
+  },
+  power: {
+    is_power_saving:
+      "Разрешава sleep режим и може да изключи BLE, Wi-Fi, serial, GPS и екрана. Осигури начин за събуждане или remote admin преди включване.",
+    on_battery_shutdown_after_secs:
+      "Изключва устройството след зададеното време без външно захранване. Използвай само ако board-ът отчита правилно external power.",
+    adc_multiplier_override:
+      "Калибрира изчисленото battery voltage. Грешна стойност води до неверен процент и power решения.",
+    wait_bluetooth_secs:
+      "Колко секунди устройството чака Bluetooth връзка преди sleep. По-голяма стойност улеснява свързването, но харчи повече батерия.",
+    sds_secs: "Интервал за deep sleep. В sleep периодите устройството може да не е достижимо.",
+    ls_secs: "Интервал за light sleep според power lifecycle-а на firmware.",
+    min_wake_secs:
+      "Минимално време, през което устройството остава будно след събуждане или активност.",
+    device_battery_ina_address:
+      "I²C адрес на INA2xx power monitor. Остави board default, ако не използваш конкретен външен сензор.",
+    powermon_enables:
+      "Bitmask за power-monitor каналите. Използвай само с позната схема на съответната платка.",
+  },
+  network: {
+    wifi_enabled:
+      "Включва Wi-Fi. Неправилни credentials могат да прекъснат TCP достъпа; запази BLE или USB fallback.",
+    wifi_ssid: "Името на Wi-Fi мрежата. Стойността е чувствителна за operational privacy.",
+    wifi_psk:
+      "Wi-Fi паролата. MeshDesk не показва съществуващата стойност; празно поле я запазва.",
+    ntp_server: "NTP hostname за сверяване на часовника при налична IP свързаност.",
+    eth_enabled: "Включва Ethernet при поддържан хардуер.",
+    address_mode:
+      "Избира DHCP или статично адресиране според firmware възможностите. Осигури резервен transport преди промяна.",
+    rsyslog_server:
+      "Адрес на remote syslog сървър. Изпращането на diagnostics извън устройството има privacy и network ефект.",
+    enabled_protocols:
+      "Bitmask на разрешените IP услуги. Неправилна стойност може да спре очакван TCP/API достъп.",
+    ipv6_enabled: "Разрешава IPv6 при поддържана мрежа и firmware.",
+  },
+  display: {
+    screen_on_secs:
+      "Колко секунди екранът остава включен след бутон или събитие. При firmware default стойност 0 обикновено означава 10 минути.",
+    auto_screen_carousel_secs:
+      "Автоматично преминава към следващата страница през зададения брой секунди. Стойност 0 изключва carousel-а.",
+    flip_screen: "Завърта дисплея на 180° за обърнат монтаж.",
+    units: "Избира metric или imperial единици за показваните стойности.",
+    oled:
+      "Драйвер за OLED controller. Остави auto-detect, освен ако дисплеят не се разпознава правилно.",
+    displaymode:
+      "Визуален режим на дисплея: стандартен, двуцветен, инвертиран или color според хардуера.",
+    heading_bold: "Използва удебелено заглавие за по-добра четимост при inverted/two-color display.",
+    wake_on_tap_or_motion:
+      "Събужда екрана при движение, tap или capacitive touch, ако хардуерът го поддържа.",
+    compass_orientation: "Компенсира физическата ориентация или обръщане на компаса на дисплея.",
+    use_12h_clock: "Включва 12-часов формат; изключено използва 24-часов часовник.",
+    use_long_node_name:
+      "Показва long name вместо short name, когато екранът и firmware изгледът имат достатъчно място.",
+    enable_message_bubbles:
+      "Показва chat bubble оформление на поддържаните device дисплеи.",
+  },
+  lora: {
+    use_preset:
+      "Когато е включено, modem preset определя bandwidth, spreading factor и coding rate. Всички участници трябва да използват съвместими radio параметри.",
+    modem_preset:
+      "Готов баланс между обхват, скорост и airtime. LONG_FAST е разумна обща отправна точка.",
+    bandwidth: "LoRa bandwidth за custom modem режим. Промяна може напълно да отдели възела от текущия mesh.",
+    spread_factor:
+      "LoRa spreading factor за custom режим. По-висок обикновено увеличава sensitivity и airtime.",
+    coding_rate:
+      "Forward-error-correction coding rate за custom режим. По-голяма защита добавя airtime overhead.",
+    frequency_offset: "Фина честотна корекция за специализиран хардуер; обикновено остава 0.",
+    region:
+      "Регулаторен LoRa region според физическото местоположение. Изборът влияе на честоти, мощност и duty-cycle.",
+    hop_limit:
+      "Максимален брой mesh препредавания. По-висока стойност увеличава reach, но и airtime; 3 е добра начална стойност.",
+    tx_enabled: "Разрешава LoRa предаване. Изключено превръща радиото в receive-only.",
+    tx_power:
+      "Предавателна мощност в dBm, ограничена от region и хардуера. Максимумът не винаги дава най-добра мрежа.",
+    channel_num:
+      "Frequency slot в избрания modem/region план. Несъвпадение отделя възела от останалите.",
+    override_duty_cycle:
+      "Заобикаля firmware duty-cycle защитата. Използвай само ако местната регулация изрично позволява това.",
+    sx126x_rx_boosted_gain:
+      "Включва boosted RX gain при SX126x. Може да подобри приемането с цената на по-висока консумация.",
+    override_frequency:
+      "Ръчно зададена честота. Advanced настройка с регулаторен риск и риск от загуба на свързаност.",
+    pa_fan_disabled: "Изключва управлението на PA fan при хардуер, който го поддържа.",
+    ignore_incoming: "Игнорира входящия LoRa трафик според firmware поведението.",
+    ignore_mqtt: "Игнорира пакети, маркирани като дошли през MQTT.",
+    config_ok_to_mqtt:
+      "Разрешава избрани configuration данни да бъдат публикувани към MQTT. Прегледай privacy модела преди включване.",
+  },
+  bluetooth: {
+    enabled:
+      "Включва BLE. Не го изключвай, ако това е единственият ти резервен достъп до устройството.",
+    mode:
+      "Pairing режимът определя fixed PIN или случаен PIN от екрана. Random PIN изисква устройство с подходящ display.",
+    fixed_pin:
+      "Статичен Bluetooth PIN. Избери непредвидима стойност и не я публикувай в logs или screenshots.",
+  },
+  security: {
+    public_key:
+      "Public част на PKI идентичността. Полето е read-only в MeshDesk и може безопасно да се споделя само за trust/admin setup.",
+    private_key:
+      "Private PKI identity key. Никога не го споделяй; MeshDesk не го чете или експортира.",
+    admin_key:
+      "Public keys, които имат remote-admin права. Добавянето на ключ дава възможност за промяна и destructive команди.",
+    is_managed:
+      "Ограничава локалните промени и поставя устройството под managed policy. Активирай само с проверен recovery път.",
+    serial_enabled: "Разрешава serial API/console според firmware и хардуера.",
+    debug_log_api_enabled:
+      "Разрешава debug logs през API. Полезно за диагностика, но увеличава обема и може да излага operational metadata.",
+    admin_channel_enabled:
+      "Разрешава legacy admin-channel управление. PKI admin е предпочитаният модел при поддържан firmware.",
+  },
+  mqtt: {
+    enabled: "Включва MQTT module. Нужни са IP мрежа и коректен broker адрес.",
+    address: "Hostname и по избор port на MQTT broker-а.",
+    username: "MQTT потребител. Третирай го като чувствителна operational информация.",
+    password: "MQTT парола. MeshDesk не показва текущата стойност; празно поле я запазва.",
+    encryption_enabled: "Изпраща channel payload-а криптирано към MQTT, когато конфигурацията го поддържа.",
+    json_enabled: "Публикува допълнителни JSON payload-и; увеличава broker traffic и излага decoded metadata.",
+    tls_enabled: "Използва TLS до MQTT broker-а. Препоръчително за broker извън доверена локална мрежа.",
+    root: "Root topic namespace за MQTT публикации и subscriptions.",
+    proxy_to_client_enabled: "Проксира MQTT през свързан client вместо директната network връзка на радиото.",
+    map_reporting_enabled:
+      "Публикува map reports. Това може да разкрие приблизителна позиция и device metadata.",
+  },
+  store_forward: {
+    enabled: "Включва Store & Forward module за възстановяване на пропуснати съобщения.",
+    heartbeat: "Интервал за Store & Forward heartbeat/availability.",
+    records: "Максимален брой съхранявани records според наличната памет.",
+    history_return_max: "Максимален брой history записи в един отговор.",
+    history_return_window: "Времеви прозорец за връщаната история.",
+    is_server: "Прави възела Store & Forward server; най-подходящо за постоянно захранван инфраструктурен node.",
+  },
+  telemetry: {
+    device_update_interval: "Интервал за device telemetry като батерия, voltage и channel utilization.",
+    environment_update_interval: "Интервал за environment telemetry. По-кратките стойности увеличават airtime.",
+    environment_measurement_enabled: "Включва четене и предаване от поддържани environment sensors.",
+    environment_screen_enabled: "Показва environment telemetry на device екрана.",
+    air_quality_enabled: "Включва поддържан air-quality sensor и съответната telemetry.",
+    air_quality_interval: "Интервал между air-quality измерванията и предаванията.",
+    power_measurement_enabled: "Включва telemetry от поддържан power monitor.",
+    power_update_interval: "Интервал за power telemetry.",
+    power_screen_enabled: "Показва power telemetry на device екрана.",
+    health_measurement_enabled: "Включва поддържан health sensor.",
+    health_update_interval: "Интервал за health telemetry.",
+    health_screen_enabled: "Показва health telemetry на device екрана.",
+    device_telemetry_enabled: "Разрешава периодичното изпращане на основната device telemetry.",
+    air_quality_screen_enabled: "Показва air-quality telemetry на device екрана.",
+  },
+  neighbor_info: {
+    enabled: "Включва Neighbor Info module за наблюдение на директно чуваните peers.",
+    update_interval: "Интервал между Neighbor Info актуализациите; ниска стойност увеличава mesh airtime.",
+    transmit_over_lora: "Предава Neighbor Info през LoRa. Изключи, ако данните са нужни само локално.",
+  },
+};
+
+function configHelpFor(sectionName, field) {
+  const explicit = configFieldHelp[sectionName]?.[field.name];
+  if (explicit) return explicit;
+  const path = `${sectionName}.${field.name}`;
+  if (field.secret) {
+    return `${path} е чувствителна стойност. MeshDesk не показва текущото съдържание; празно поле го оставя непроменено.`;
+  }
+  if (field.read_only) {
+    return `${path} е read-only в MeshDesk, за да не бъде променено или разкрито опасно binary поле.`;
+  }
+  if (field.name.endsWith("_gpio") || field.name.endsWith("_pin")) {
+    return `${path} избира физически GPIO pin. Провери pinout-а на точната платка, защото грешна стойност може да конфликтува с друг хардуер.`;
+  }
+  if (field.name.endsWith("_secs") || field.name.endsWith("_interval")) {
+    return `${path} е времеви интервал, обикновено в секунди. По-малка стойност може да увеличи консумацията, packet rate или LoRa airtime.`;
+  }
+  if (field.name.endsWith("_enabled") || field.type === "bool") {
+    return `${path} включва или изключва firmware поведение. Наличността и ефектът може да зависят от хардуера и firmware версията.`;
+  }
+  if (field.type === "enum") {
+    return `${path} избира един от режимите, поддържани от текущия firmware. Запази recovery transport преди промяна на непознат режим.`;
+  }
+  return `${path} е Meshtastic firmware параметър. Променяй го само когато знаеш очакваната единица и допустимия диапазон за конкретния хардуер.`;
+}
+
+function helpTrigger(help, label) {
+  return `<span class="help-trigger" tabindex="0" role="button"
+    aria-label="${escapeHtml(label)}" data-help="${escapeHtml(help)}">i</span>`;
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -817,7 +1071,7 @@ function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastE
   $("#remoteConfigControls").classList.add("hidden");
   $("#configPanel").open = false;
   $("#adminPanel").open = false;
-  $("#channelPanel").open = false;
+  selectSettingsView("config");
   renderNodes([]);
   renderChannels([]);
   renderChannelSlots([]);
@@ -1935,6 +2189,7 @@ function renderNodeInspector(node) {
     $("#configTarget").value = node.id;
     $("#remoteConfigControls").classList.remove("hidden");
     $("#configPanel").open = true;
+    selectSettingsView("config");
     state.activeConfig = null;
     closeInspector();
     await refreshConfig();
@@ -2233,7 +2488,10 @@ function renderChannelEditor(slot) {
     </div>
     <div class="channel-editor-grid">
       <label>
-        Role
+        <span class="config-field-label">Role ${helpTrigger(
+          "Slot 0 винаги е PRIMARY. Допълнителните активни slots са SECONDARY; DISABLED премахва избрания Secondary канал.",
+          "Помощ за channel role",
+        )}</span>
         <select id="channelRole" ${isPrimary ? "disabled" : ""}>
           ${
             isPrimary
@@ -2246,12 +2504,18 @@ function renderChannelEditor(slot) {
         </select>
       </label>
       <label>
-        Име
+        <span class="config-field-label">Име ${helpTrigger(
+          "Име до 10 знака. Трябва да е уникално сред активните канали и да съвпада при останалите участници.",
+          "Помощ за името на канала",
+        )}</span>
         <input id="channelName" maxlength="10" value="${escapeHtml(slot.name || "")}"
           placeholder="${isPrimary ? "Primary (по желание)" : "до 10 знака"}">
       </label>
       <label>
-        PSK действие
+        <span class="config-field-label">PSK действие ${helpTrigger(
+          "Запази текущия не чете и не променя ключа. Random създава нов 256-bit PSK; custom приема 128/256-bit hex или base64.",
+          "Помощ за channel PSK",
+        )}</span>
         <select id="channelPskMode">
           <option value="unchanged">Запази текущия</option>
           <option value="random" ${slot.enabled ? "" : "selected"}>Нов random 256-bit</option>
@@ -2261,12 +2525,18 @@ function renderChannelEditor(slot) {
         </select>
       </label>
       <label class="channel-custom-psk hidden">
-        Custom PSK
+        <span class="config-field-label">Custom PSK ${helpTrigger(
+          "Тайна 16/32-byte стойност във формат 0x… или base64:…. MeshDesk не я записва в audit log и не я връща след save.",
+          "Помощ за custom PSK",
+        )}</span>
         <input id="channelPsk" type="password" autocomplete="new-password"
           placeholder="0x… или base64:…">
       </label>
       <label>
-        Position precision
+        <span class="config-field-label">Position precision ${helpTrigger(
+          "Контролира точността на позицията, споделяна в този канал. По-ниска точност пази повече location privacy.",
+          "Помощ за channel position precision",
+        )}</span>
         <input id="channelPositionPrecision" type="number" min="0" max="32"
           value="${escapeHtml(slot.position_precision ?? 0)}">
       </label>
@@ -2275,11 +2545,19 @@ function renderChannelEditor(slot) {
           <input id="channelUplink" type="checkbox" ${
             slot.uplink_enabled ? "checked" : ""
           }> MQTT uplink
+          ${helpTrigger(
+            "Позволява пакетите от този LoRa канал да бъдат качвани към MQTT от подходящ gateway.",
+            "Помощ за MQTT uplink",
+          )}
         </label>
         <label class="checkbox">
           <input id="channelDownlink" type="checkbox" ${
             slot.downlink_enabled ? "checked" : ""
           }> MQTT downlink
+          ${helpTrigger(
+            "Позволява MQTT пакетите за този канал да влизат в LoRa mesh-а. Използвай внимателно заради airtime и privacy.",
+            "Помощ за MQTT downlink",
+          )}
         </label>
       </div>
       <p class="channel-secret-note wide">
@@ -2290,6 +2568,7 @@ function renderChannelEditor(slot) {
     <div class="channel-editor-actions">
       <button type="submit" class="primary">Запиши channel ${escapeHtml(slot.index)}</button>
     </div>`;
+  initHelpTips(form);
   $("#channelPskMode").addEventListener("change", () => {
     $(".channel-custom-psk").classList.toggle(
       "hidden",
@@ -2471,18 +2750,24 @@ function renderConfigGuidance(section) {
       .join("")}</ul>`;
 }
 
-function fieldControl(field) {
+function fieldControl(sectionName, field) {
   const id = `config-${field.name}`;
+  const label = `${escapeHtml(field.label)}${
+    field.repeated ? " (comma-separated)" : ""
+  } ${helpTrigger(
+    configHelpFor(sectionName, field),
+    `Помощ за ${sectionName}.${field.name}`,
+  )}`;
   const common = `id="${id}" name="${field.name}" data-type="${field.type}" ${
     field.repeated ? 'data-repeated="true"' : ""
   } ${field.read_only ? "disabled" : ""}`;
   if (field.type === "bool") {
     return `<label class="config-toggle"><input type="checkbox" ${common} ${
       field.value ? "checked" : ""
-    }><span>${escapeHtml(field.label)}</span></label>`;
+    }><span>${label}</span></label>`;
   }
   if (field.type === "enum") {
-    return `<label>${escapeHtml(field.label)}<select ${common}>${field.enum_values
+    return `<label><span class="config-field-label">${label}</span><select ${common}>${field.enum_values
       .map(
         (value) =>
           `<option value="${escapeHtml(value)}" ${
@@ -2499,9 +2784,8 @@ function fieldControl(field) {
       : field.value ?? "";
   const step = field.type === "float" ? 'step="any"' : "";
   const placeholder = field.secret ? 'placeholder="Остави празно, за да не се променя"' : "";
-  return `<label>${escapeHtml(field.label)}${
-    field.repeated ? " (comma-separated)" : ""
-  }<input type="${inputType}" ${common} value="${escapeHtml(value)}" ${step} ${placeholder}></label>`;
+  return `<label><span class="config-field-label">${label}</span>
+    <input type="${inputType}" ${common} value="${escapeHtml(value)}" ${step} ${placeholder}></label>`;
 }
 
 function selectConfigSection(name) {
@@ -2526,8 +2810,11 @@ function selectConfigSection(name) {
       <button type="submit" class="primary">Запиши секцията</button>
     </div>
     <div id="configGuidance" class="config-guidance hidden"></div>
-    <div class="config-fields">${section.fields.map(fieldControl).join("")}</div>`;
+    <div class="config-fields">${section.fields
+      .map((field) => fieldControl(section.name, field))
+      .join("")}</div>`;
   renderConfigGuidance(section);
+  initHelpTips(form);
   if (section.name === "device") {
     $("#config-role")?.addEventListener("change", () => renderConfigGuidance(section));
   }
@@ -3100,6 +3387,20 @@ $("#nodePreferenceFilter").addEventListener("change", () => renderNodes(state.no
 $("#showSelfNode").addEventListener("change", () => renderNodes(state.nodes));
 $("#nodeSort").addEventListener("change", () => renderNodes(state.nodes));
 $("#refreshNodes").addEventListener("click", refreshNodes);
+$("#settingsConfigTab").addEventListener("click", () => selectSettingsView("config"));
+$("#settingsChannelsTab").addEventListener("click", () => selectSettingsView("channels"));
+document.querySelector(".settings-tabs").addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const channels =
+    event.key === "ArrowRight" || event.key === "End"
+      ? true
+      : event.key === "ArrowLeft" || event.key === "Home"
+        ? false
+        : $("#settingsChannelsTab").getAttribute("aria-selected") !== "true";
+  selectSettingsView(channels ? "channels" : "config");
+  $(channels ? "#settingsChannelsTab" : "#settingsConfigTab").focus();
+});
 $("#reloadChannels").addEventListener("click", () =>
   Promise.all([refreshChannelSlots(), refreshChannels()]),
 );

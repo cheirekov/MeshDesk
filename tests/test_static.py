@@ -78,6 +78,9 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
 
     assert 'id="closeConversation"' in page.text
     assert 'id="channelPanel"' in page.text
+    assert 'id="settingsConfigTab"' in page.text
+    assert 'id="settingsChannelsTab"' in page.text
+    assert page.text.index('id="configPanel"') < page.text.index('id="channelPanel"')
     assert 'id="channelSlotList"' in page.text
     assert 'id="nodePreferenceFilter"' in page.text
     assert 'id="showSelfNode"' in page.text
@@ -85,3 +88,20 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert "clearDeviceBoundUi" in script.text
     assert "refreshChannelSlots" in script.text
     assert "olderThanDay" in script.text
+
+
+def test_contextual_help_covers_dynamic_config_and_admin_controls() -> None:
+    app = create_app(manager=StaticManager())
+
+    with TestClient(app) as client:
+        page = client.get("/")
+        script = client.get("/app.js")
+
+    assert "configFieldHelp" in script.text
+    assert "configHelpFor(sectionName, field)" in script.text
+    assert "button_gpio" in script.text
+    assert "auto_screen_carousel_secs" in script.text
+    assert "initHelpTips(form)" in script.text
+    assert "Помощ за рестартиране" in page.text
+    assert "Помощ за изчистване на NodeDB" in page.text
+    assert "Помощ за пълно фабрично нулиране" in page.text

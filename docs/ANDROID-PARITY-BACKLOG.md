@@ -96,7 +96,7 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 
 | ID | Приоритет | Функция | Зависимости | Статус |
 |---|---|---|---|---|
-| CFG-01 | P1 | Contextual configuration help | guidance registry | **started** |
+| CFG-01 | P1 | Contextual configuration help | guidance registry | **completed** |
 | CFG-02 | P1 | Specialized forms, units и validation | schema metadata | queued |
 | CFG-03 | P1 | Firmware/capability-aware visibility | NODE-08 | queued |
 | CFG-04 | P2 | Region/preset compatibility advisor | capability + regulatory data | queued |

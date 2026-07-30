@@ -61,7 +61,7 @@ main {
   padding: 22px;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.16);
 }
-.connection-panel, .chat-panel, .channel-panel, .nodes-panel { grid-column: 1 / -1; }
+.connection-panel, .chat-panel, .nodes-panel { grid-column: 1 / -1; }
 .diagnostics-panel { grid-column: 1 / -1; }
 .admin-panel { grid-column: 1 / -1; }
 .config-panel { grid-column: 1 / -1; }
@@ -757,20 +757,6 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 }
 .network-stat b { margin-right: 3px; color: var(--text); }
 
-.channel-panel summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  list-style: none;
-}
-.channel-panel summary::-webkit-details-marker { display: none; }
-.channel-panel[open] .details-hint { font-size: 0; }
-.channel-panel[open] .details-hint::after {
-  content: "Скрий";
-  font-size: 0.7rem;
-}
-.channel-panel-body { margin-top: 18px; }
 .channel-manager-intro {
   display: flex;
   align-items: flex-start;
@@ -1479,6 +1465,31 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   font-size: 0.7rem;
 }
 .config-panel-body { margin-top: 20px; }
+.settings-tabs {
+  display: inline-flex;
+  max-width: 100%;
+  margin-bottom: 18px;
+  padding: 3px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #091411;
+}
+.settings-tab {
+  min-width: max-content;
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--muted);
+}
+.settings-tab.active {
+  background: #1d302a;
+  color: var(--text);
+}
+.settings-tab:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+.settings-view { min-width: 0; }
 .config-toolbar {
   display: flex;
   align-items: end;
@@ -1579,6 +1590,11 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   letter-spacing: 0.14em;
 }
 .config-form-title h3 { margin: 3px 0 0; font-size: 1.1rem; }
+.config-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
 .config-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(180px, 1fr));
@@ -1617,7 +1633,7 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 
 @media (max-width: 860px) {
   main { grid-template-columns: 1fr; }
-  .connection-panel, .chat-panel, .channel-panel, .nodes-panel, .diagnostics-panel,
+  .connection-panel, .chat-panel, .nodes-panel, .diagnostics-panel,
   .admin-panel {
     grid-column: 1;
     grid-row: auto;

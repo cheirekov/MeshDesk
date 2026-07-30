@@ -1,8 +1,8 @@
 # Channel Manager
 
-MeshDesk управлява Meshtastic `ChannelSettings` отделно от protobuf radio/module
-конфигурацията. Channel slot-овете определят разговорите, PSK и MQTT
-uplink/downlink поведението.
+MeshDesk управлява Meshtastic `ChannelSettings` от таба **Настройки → Primary и
+Secondary канали**, отделно от protobuf radio/module формата. Channel slot-овете
+определят разговорите, PSK и MQTT uplink/downlink поведението.
 
 ## Правила
 

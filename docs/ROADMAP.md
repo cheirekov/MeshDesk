@@ -13,6 +13,7 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 - [x] Role Advisor за `CLIENT`, `CLIENT_BASE`, `CLIENT_MUTE`, `ROUTER` и
   `ROUTER_LATE`.
 - [x] Contextual help за чувствителни configuration секции.
+- [x] Field-level help за radio/module/channel настройки и Administration.
 - [ ] Централен searchable Help център в приложението.
 - [ ] Firmware/capability обозначения към всяка настройка.
 

@@ -6,14 +6,14 @@ MeshDesk подрежда секциите според честота, риск
 
 1. **Връзка** — винаги първа; след свързване се свива до status bar.
 2. **Съобщения** — основната ежедневна работа.
-3. **Канали** — сгънат manager непосредствено до messaging контекста.
-4. **Мрежа** — nodes, diagnostics и действия към конкретен node.
+3. **Мрежа** — nodes, diagnostics и действия към конкретен node.
 
 ## Вторични секции
 
-5. **Диагностика** — read-only и сгъната по подразбиране.
-6. **Конфигурация** — рядко използвана, но преди destructive operations.
-7. **Администрация** — последна, сгъната и визуално отделена заради reset,
+4. **Диагностика** — read-only и сгъната по подразбиране.
+5. **Настройки** — рядко използвана и сгъната; съдържа табове **Radio и
+   модули** и **Primary и Secondary канали**.
+6. **Администрация** — последна, сгъната и визуално отделена заради reset,
    shutdown и factory-reset операциите.
 
 ## Контекстна помощ
@@ -32,6 +32,12 @@ MeshDesk подрежда секциите според честота, риск
 Критичните предупреждения остават като постоянно helper text. Решението следва
 [Carbon tooltip guidance](https://carbondesignsystem.com/components/tooltip/usage/)
 и [Fluent 2 tooltip guidance](https://fluent2.microsoft.design/components/web/react/core/tooltip/usage).
+
+Field-level registry покрива познатите radio/module/channel параметри с
+предназначение, единица и risk context. Ново protobuf поле получава fallback
+според `secret`, `read_only`, GPIO, interval, boolean или enum типа, докато бъде
+добавено специализирано описание. Подробности:
+[Contextual Help](CONTEXTUAL-HELP.md).
 
 Затова Role Advisor се показва в `Configuration → Device → role`, а не между
 диагностиката и административните операции. Диалогът:
