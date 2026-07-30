@@ -1208,10 +1208,19 @@ class MeshtasticManager:
         elif operation == "user_info" and not error:
             result = {"user": decoded.get("user") or {}}
         elif operation == "neighbor_info" and not error:
-            result = {
-                "neighbor_info": decoded.get("neighborinfo")
+            neighbor_info = _safe(
+                decoded.get("neighborinfo")
                 or decoded.get("neighborInfo")
                 or {}
+            )
+            if isinstance(neighbor_info, dict):
+                neighbor_info = {
+                    key: value
+                    for key, value in neighbor_info.items()
+                    if key != "raw"
+                }
+            result = {
+                "neighbor_info": neighbor_info,
             }
 
         self._add_event(

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from meshtastic.protobuf import (
     channel_pb2,
     localonly_pb2,
+    mesh_pb2,
     portnums_pb2,
     storeforward_pb2,
 )
@@ -396,6 +397,51 @@ def test_neighbor_info_cooldown_is_per_node_and_user_info_is_available():
     ports = [kwargs["portNum"] for _, kwargs in interface.sent_data]
     assert portnums_pb2.PortNum.NEIGHBORINFO_APP in ports
     assert portnums_pb2.PortNum.NODEINFO_APP in ports
+
+
+def test_neighbor_info_result_keeps_neighbors_but_removes_duplicate_raw_projection():
+    manager, interface = connected_manager()
+    manager.request_node_action("!12345678", "neighbor_info")
+    _, kwargs = interface.sent_data[0]
+    raw = mesh_pb2.NeighborInfo(
+        node_id=0x12345678,
+        last_sent_by_id=0x12345678,
+        node_broadcast_interval_secs=21600,
+        neighbors=[
+            mesh_pb2.Neighbor(
+                node_id=0x87654321,
+                snr=7.25,
+                last_rx_time=1_700_000_000,
+                node_broadcast_interval_secs=900,
+            )
+        ],
+    )
+    kwargs["onResponse"](
+        {
+            "decoded": {
+                "portnum": "NEIGHBORINFO_APP",
+                "neighborinfo": {
+                    "nodeId": 0x12345678,
+                    "lastSentById": 0x12345678,
+                    "nodeBroadcastIntervalSecs": 21600,
+                    "neighbors": [
+                        {
+                            "nodeId": 0x87654321,
+                            "snr": 7.25,
+                            "lastRxTime": "1700000000",
+                            "nodeBroadcastIntervalSecs": 900,
+                        }
+                    ],
+                    "raw": raw,
+                },
+            }
+        }
+    )
+
+    result = manager.events()[-1]["result"]["neighbor_info"]
+    assert "raw" not in result
+    assert result["neighbors"][0]["snr"] == 7.25
+    assert result["nodeBroadcastIntervalSecs"] == 21600
 
 
 def test_node_management_action_updates_local_nodedb():

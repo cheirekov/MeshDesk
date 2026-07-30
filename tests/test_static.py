@@ -93,6 +93,9 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert "simple0–simple254" in script.text
     assert "Custom PSK и потвърждението не съвпадат" in script.text
     assert "olderThanDay" in script.text
+    assert "neighborInfoHtml" in script.text
+    assert "директен отчет от първоизточника" in script.text
+    assert "Raw Neighbor Info packet" in script.text
 
 
 def test_contextual_help_covers_dynamic_config_and_admin_controls() -> None:

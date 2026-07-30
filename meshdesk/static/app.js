@@ -1879,6 +1879,118 @@ function metricTable(value) {
     .join("")}</table>`;
 }
 
+function neighborValue(value, camelCase, snakeCase) {
+  return value?.[camelCase] ?? value?.[snakeCase];
+}
+
+function nodeIdFromNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return `!${(number >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function formatNeighborInterval(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return "неизвестен";
+  if (value % 3600 === 0) {
+    const hours = value / 3600;
+    return `${hours} ${hours === 1 ? "час" : "часа"} (${value} s)`;
+  }
+  if (value % 60 === 0) return `${value / 60} min (${value} s)`;
+  return `${value} s`;
+}
+
+function neighborNodeLabel(nodeNumber) {
+  const nodeId = nodeIdFromNumber(nodeNumber);
+  const node = nodeId ? nodeForId(nodeId) : null;
+  return {
+    id: nodeId || valueOrDash(nodeNumber),
+    name: node?.long_name || node?.short_name || "Непознат възел",
+  };
+}
+
+function neighborInfoHtml(info, event) {
+  if (!info || typeof info !== "object") {
+    return '<p class="inspector-note">Отговорът не съдържа Neighbor Info.</p>';
+  }
+  const reportNodeNumber = neighborValue(info, "nodeId", "node_id");
+  const senderNodeNumber = neighborValue(info, "lastSentById", "last_sent_by_id");
+  const interval = neighborValue(
+    info,
+    "nodeBroadcastIntervalSecs",
+    "node_broadcast_interval_secs",
+  );
+  const reportNode = neighborNodeLabel(reportNodeNumber);
+  const senderNode = neighborNodeLabel(senderNodeNumber);
+  const neighbors = Array.isArray(info.neighbors) ? info.neighbors : [];
+  const senderExplanation =
+    Number(reportNodeNumber) === Number(senderNodeNumber)
+      ? "директен отчет от първоизточника"
+      : "отчетът е препратен от друг възел";
+
+  const rows = neighbors.length
+    ? neighbors
+        .map((neighbor) => {
+          const nodeNumber = neighborValue(neighbor, "nodeId", "node_id");
+          const node = neighborNodeLabel(nodeNumber);
+          const snr = neighborValue(neighbor, "snr", "snr");
+          const lastRx = neighborValue(neighbor, "lastRxTime", "last_rx_time");
+          const neighborInterval = neighborValue(
+            neighbor,
+            "nodeBroadcastIntervalSecs",
+            "node_broadcast_interval_secs",
+          );
+          const lastRxLabel = lastRx
+            ? `${new Date(Number(lastRx) * 1000).toLocaleString()} · ${formatAge(
+                Number(lastRx),
+              )}`
+            : "неизвестно";
+          return `
+            <tr>
+              <td><strong>${escapeHtml(node.name)}</strong><small>${escapeHtml(
+                node.id,
+              )} · ${escapeHtml(nodeNumber)}</small></td>
+              <td>${escapeHtml(snr == null ? "—" : `${Number(snr).toFixed(2)} dB`)}</td>
+              <td>${escapeHtml(lastRxLabel)}</td>
+              <td>${escapeHtml(formatNeighborInterval(neighborInterval))}</td>
+            </tr>`;
+        })
+        .join("")
+    : '<tr><td colspan="4">Възелът не е върнал записани съседи.</td></tr>';
+
+  return `
+    <div class="neighbor-summary">
+      <div class="inspector-value"><span>Отчет на възел</span><strong>${escapeHtml(
+        reportNode.name,
+      )}</strong><small>${escapeHtml(reportNode.id)} · ${escapeHtml(
+        reportNodeNumber,
+      )}</small></div>
+      <div class="inspector-value"><span>Последно изпратен от</span><strong>${escapeHtml(
+        senderNode.name,
+      )}</strong><small>${escapeHtml(senderNode.id)} · ${escapeHtml(
+        senderExplanation,
+      )}</small></div>
+      <div class="inspector-value"><span>Broadcast interval</span><strong>${escapeHtml(
+        formatNeighborInterval(interval),
+      )}</strong></div>
+      <div class="inspector-value"><span>Върнати съседи</span><strong>${escapeHtml(
+        neighbors.length,
+      )}</strong></div>
+    </div>
+    <div class="neighbor-table-wrap">
+      <table class="neighbor-table">
+        <thead><tr><th>Съсед</th><th>SNR</th><th>Последно приет</th><th>Интервал</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="inspector-note">Това са директно чуваните съседи според отчитащия
+      възел, а не непременно всички възли по маршрут до него.</p>
+    <details class="raw-details">
+      <summary>Raw Neighbor Info packet</summary>
+      <pre>${escapeHtml(JSON.stringify(event.packet || info, null, 2))}</pre>
+    </details>`;
+}
+
 function routeHtml(route) {
   if (!route?.length) return '<p class="inspector-note">Маршрутът не е върнат.</p>';
   return `<div class="route-path">${route
@@ -1955,7 +2067,7 @@ function operationResultHtml(event) {
   } else if (event.operation === "user_info") {
     body = metricTable(event.result?.user);
   } else if (event.operation === "neighbor_info") {
-    body = metricTable(event.result?.neighbor_info);
+    body = neighborInfoHtml(event.result?.neighbor_info, event);
   } else if (event.operation === "remote_config") {
     body = `<p>Секция „${escapeHtml(event.section)}“ е заредена чрез PKI admin.</p>`;
   } else if (event.operation === "administration") {
