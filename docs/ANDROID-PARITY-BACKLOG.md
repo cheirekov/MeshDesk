@@ -28,9 +28,9 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 
 | ID | Приоритет | Функция | Зависимости | Статус |
 |---|---|---|---|---|
-| CH-01 | P1 | Пълен channel slot list, включително disabled | channel schema | queued |
-| CH-02 | P1 | Add/edit/reorder/delete и PRIMARY validation | CH-01 | queued |
-| CH-03 | P1 | PSK generate/import със secret-safe handling | CH-02 | queued |
+| CH-01 | P1 | Пълен channel slot list, включително disabled | channel schema | **completed** |
+| CH-02 | P1 | Add/edit/reorder/delete и PRIMARY validation | CH-01 | **started** |
+| CH-03 | P1 | PSK generate/import със secret-safe handling | CH-02 | **completed** |
 | CH-04 | P1 | Channel URL и QR import/export | CH-02/03 | queued |
 | CH-05 | P2 | Remote channel administration | capability + PKI ACK | queued |
 | CH-06 | P2 | Channel backup/restore diff | configuration snapshots | queued |

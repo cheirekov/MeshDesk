@@ -111,6 +111,18 @@ class HistoryReplayRequest(BaseModel):
     max_messages: int | None = Field(default=None, ge=1, le=500)
 
 
+class ChannelUpdateRequest(BaseModel):
+    role: Literal["PRIMARY", "SECONDARY", "DISABLED"]
+    name: str = Field(default="", max_length=10)
+    psk_mode: Literal["unchanged", "random", "default", "none", "custom"] = (
+        "unchanged"
+    )
+    psk: str = Field(default="", max_length=128)
+    uplink_enabled: bool = False
+    downlink_enabled: bool = False
+    position_precision: int = Field(default=0, ge=0, le=32)
+
+
 def create_app(
     manager: MeshtasticManager | None = None,
     connection_profiles: ConnectionProfileStore | None = None,
@@ -318,6 +330,33 @@ def create_app(
     @api.get("/api/channels")
     def channels() -> dict:
         return {"channels": radio.channels()}
+
+    @api.get("/api/channel-slots")
+    def channel_slots() -> dict:
+        return {"channels": radio.channel_slots()}
+
+    @api.put("/api/channel-slots/{index}")
+    def update_channel(index: int, request: ChannelUpdateRequest) -> dict:
+        try:
+            return {
+                "channels": radio.update_channel(
+                    index,
+                    request.role,
+                    request.name,
+                    request.psk_mode,
+                    request.psk,
+                    request.uplink_enabled,
+                    request.downlink_enabled,
+                    request.position_precision,
+                )
+            }
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc) or type(exc).__name__,
+            ) from exc
 
     @api.post("/api/node-actions", status_code=202)
     def node_action(request: NodeActionRequest) -> dict:

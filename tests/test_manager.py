@@ -47,6 +47,14 @@ class FakeLocalNode:
     def writeConfig(self, section):
         self.written.append(section)
 
+    def writeChannel(self, index):
+        self.written.append(("write_channel", index))
+
+    def deleteChannel(self, index):
+        self.written.append(("delete_channel", index))
+        self.channels[index].role = channel_pb2.Channel.Role.DISABLED
+        self.channels[index].settings.Clear()
+
     def setFavorite(self, node_id):
         self.written.append(("favorite", node_id))
         self._respond_to_admin()
@@ -414,6 +422,63 @@ def test_channels_include_only_enabled_channels():
             "encrypted": True,
         }
     ]
+
+
+def test_channel_manager_lists_all_slots_without_exposing_psk():
+    manager, interface = connected_manager()
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.name = "Main"
+    primary.settings.psk = b"\x01"
+    disabled = channel_pb2.Channel(index=1, role=channel_pb2.Channel.Role.DISABLED)
+    later = channel_pb2.Channel(index=2, role=channel_pb2.Channel.Role.DISABLED)
+    interface.localNode.channels = [primary, disabled, later]
+
+    slots = manager.channel_slots()
+    assert len(slots) == 3
+    assert slots[0]["psk_state"] == "default"
+    assert "psk" not in slots[0]
+    assert slots[1]["editable"] is True
+    assert slots[2]["editable"] is False
+
+
+def test_channel_manager_adds_updates_and_disables_secondary_channel():
+    manager, interface = connected_manager()
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.name = "Main"
+    disabled = channel_pb2.Channel(index=1, role=channel_pb2.Channel.Role.DISABLED)
+    interface.localNode.channels = [primary, disabled]
+
+    slots = manager.update_channel(
+        1,
+        "SECONDARY",
+        "Ops",
+        "random",
+        "",
+        True,
+        False,
+        12,
+    )
+    secondary = interface.localNode.channels[1]
+    assert secondary.Role.Name(secondary.role) == "SECONDARY"
+    assert secondary.settings.name == "Ops"
+    assert len(secondary.settings.psk) == 32
+    assert secondary.settings.uplink_enabled is True
+    assert secondary.settings.module_settings.position_precision == 12
+    assert interface.localNode.written[-1] == ("write_channel", 1)
+    assert slots[1]["enabled"] is True
+
+    manager.update_channel(
+        1,
+        "DISABLED",
+        "Ops",
+        "unchanged",
+        "",
+        False,
+        False,
+        0,
+    )
+    assert interface.localNode.written[-1] == ("delete_channel", 1)
+    assert manager.channel_slots()[1]["enabled"] is False
 
 
 def test_config_schema_hides_secret_and_updates_section():

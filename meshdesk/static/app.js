@@ -8,10 +8,14 @@ const state = {
   activeConfig: null,
   nodes: [],
   channels: [],
+  channelSlots: [],
+  activeChannelSlot: null,
   unread: {},
   chatMessages: {},
   deliveryReceipts: {},
   selectedConversation: null,
+  closedConversations: new Set(),
+  sessionUiCleared: false,
   eventLog: [],
   inspector: null,
   profileId: null,
@@ -58,6 +62,54 @@ function organizeWorkspace() {
   if (configuration && administration) {
     administration.parentElement.insertBefore(configuration, administration);
   }
+}
+
+function positionHelpTooltip(trigger) {
+  const tooltip = $("#helpTooltip");
+  const rect = trigger.getBoundingClientRect();
+  const margin = 8;
+  tooltip.textContent = trigger.dataset.help;
+  tooltip.classList.remove("hidden");
+  const tooltipRect = tooltip.getBoundingClientRect();
+  let left = rect.left + rect.width / 2 - tooltipRect.width / 2;
+  left = Math.max(12, Math.min(left, window.innerWidth - tooltipRect.width - 12));
+  let top = rect.bottom + margin;
+  if (top + tooltipRect.height > window.innerHeight - 12) {
+    top = rect.top - tooltipRect.height - margin;
+  }
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${Math.max(12, top)}px`;
+}
+
+function hideHelpTooltip() {
+  $("#helpTooltip").classList.add("hidden");
+}
+
+function initHelpTips() {
+  document.querySelectorAll("[data-help]").forEach((trigger) => {
+    trigger.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      positionHelpTooltip(trigger);
+    });
+    trigger.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        positionHelpTooltip(trigger);
+      }
+    });
+    trigger.addEventListener("mouseenter", () => positionHelpTooltip(trigger));
+    trigger.addEventListener("mouseleave", hideHelpTooltip);
+    trigger.addEventListener("focus", () => {
+      trigger.setAttribute("aria-describedby", "helpTooltip");
+      positionHelpTooltip(trigger);
+    });
+    trigger.addEventListener("blur", () => {
+      trigger.removeAttribute("aria-describedby");
+      hideHelpTooltip();
+    });
+  });
 }
 
 function relativeTime(value) {
@@ -624,12 +676,12 @@ function updateControls(status) {
   $("#connectButton").textContent = busy ? "Свързване…" : "Свържи";
   $("#disconnectButton").disabled = !busy && !connected;
   $("#messageText").disabled = !connected;
-  $("#channel").disabled =
-    !connected || Boolean(state.selectedConversation?.startsWith("channel:"));
+  $("#channel").disabled = !connected;
   $("#wantAck").disabled = !connected;
   $("#sendButton").disabled = !connected;
   $("#newDirectButton").disabled = !connected;
   $("#refreshNodes").disabled = !connected;
+  $("#reloadChannels").disabled = !connected;
   $("#reloadConfig").disabled = !connected;
   $("#configTarget").disabled = !connected;
   $("#exportConfig").disabled = !connected;
@@ -699,7 +751,8 @@ function updateConnectionHealth(status) {
 async function refreshStatus() {
   try {
     const status = await api("/api/status");
-    if ((status.profile_id || null) !== state.profileId) {
+    const profileChanged = (status.profile_id || null) !== state.profileId;
+    if (profileChanged) {
       await activateProfile(status.profile_id || null, status.event_sequence);
     }
     if (state.readThrough > status.event_sequence) {
@@ -713,15 +766,65 @@ async function refreshStatus() {
     } else if (status.state !== "connected" && status.state !== "connecting") {
       state.connectionExpanded = true;
     }
+    if (
+      wasConnected &&
+      status.state !== "connected" &&
+      status.state !== "connecting"
+    ) {
+      clearDeviceBoundUi(
+        disconnectReasonLabels[status.health?.reason] || "Disconnected",
+        status.event_sequence,
+      );
+    }
     updateControls(status);
     if (!wasConnected && status.state === "connected") {
       toast(`Свързано: ${status.target}`);
       await verifySelectedConnectionProfile(status);
-      await Promise.all([refreshNodes(), refreshChannels(), refreshConfig()]);
+      if (state.sessionUiCleared && !profileChanged) {
+        await activateProfile(status.profile_id || null, status.event_sequence);
+      }
+      state.sessionUiCleared = false;
+      await Promise.all([
+        refreshNodes(),
+        refreshChannels(),
+        refreshChannelSlots(),
+        refreshConfig(),
+      ]);
     }
   } catch (error) {
     toast(error.message, true);
   }
+}
+
+function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastEvent) {
+  state.chatMessages = {};
+  state.deliveryReceipts = {};
+  state.eventLog = [];
+  state.unread = {};
+  state.selectedConversation = null;
+  state.closedConversations.clear();
+  state.nodes = [];
+  state.channels = [];
+  state.channelSlots = [];
+  state.activeChannelSlot = null;
+  state.configSections = [];
+  state.activeConfig = null;
+  state.lastEvent = Math.max(state.lastEvent, eventSequence || 0);
+  state.sessionUiCleared = true;
+  if (state.inspector) closeInspector();
+  $("#configTarget").value = "";
+  $("#adminTarget").value = "";
+  $("#remoteConfigControls").classList.add("hidden");
+  $("#configPanel").open = false;
+  $("#adminPanel").open = false;
+  $("#channelPanel").open = false;
+  renderNodes([]);
+  renderChannels([]);
+  renderChannelSlots([]);
+  renderConfig([]);
+  renderUnread();
+  $("#events").className = "events empty-state";
+  $("#events").textContent = reason;
 }
 
 async function activateProfile(profileId, eventSequence) {
@@ -732,13 +835,18 @@ async function activateProfile(profileId, eventSequence) {
   state.eventLog = [];
   state.unread = {};
   state.selectedConversation = null;
+  state.closedConversations.clear();
   state.nodes = [];
   state.channels = [];
+  state.channelSlots = [];
+  state.activeChannelSlot = null;
   state.readThrough = 0;
   $("#events").className = "events empty-state";
   $("#events").textContent = "Все още няма събития.";
   renderNodes([]);
   renderChannels([]);
+  renderChannelSlots([]);
+  renderConfig([]);
   renderUnread();
   if (!profileId) return;
   try {
@@ -772,8 +880,9 @@ async function connect(event) {
 async function disconnect() {
   try {
     state.connectionExpanded = true;
-    updateControls(await api("/api/disconnect", { method: "POST" }));
-    renderNodes([]);
+    const status = await api("/api/disconnect", { method: "POST" });
+    clearDeviceBoundUi("Disconnected · прекъснато от оператора", status.event_sequence);
+    updateControls(status);
   } catch (error) {
     toast(error.message, true);
   }
@@ -972,22 +1081,34 @@ function conversationKeys() {
       ? ["channel:0"]
       : [];
   const dynamicKeys = Object.keys(state.chatMessages);
-  return [...new Set([...channelKeys, ...dynamicKeys])].sort((left, right) => {
-    const leftChannel = left.startsWith("channel:");
-    const rightChannel = right.startsWith("channel:");
-    if (leftChannel !== rightChannel) return leftChannel ? -1 : 1;
-    if (leftChannel) {
-      return Number(left.slice(8)) - Number(right.slice(8));
-    }
-    const leftTime = state.chatMessages[left]?.at(-1)?.time || "";
-    const rightTime = state.chatMessages[right]?.at(-1)?.time || "";
-    return rightTime.localeCompare(leftTime);
-  });
+  return [...new Set([...channelKeys, ...dynamicKeys])]
+    .filter((key) => !state.closedConversations.has(key))
+    .sort((left, right) => {
+      const leftChannel = left.startsWith("channel:");
+      const rightChannel = right.startsWith("channel:");
+      if (leftChannel !== rightChannel) return leftChannel ? -1 : 1;
+      if (leftChannel) {
+        return Number(left.slice(8)) - Number(right.slice(8));
+      }
+      const leftTime = state.chatMessages[left]?.at(-1)?.time || "";
+      const rightTime = state.chatMessages[right]?.at(-1)?.time || "";
+      return rightTime.localeCompare(leftTime);
+    });
 }
 
 function messageTime(value) {
   if (!value) return "";
-  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timestamp = new Date(value);
+  const olderThanDay = Date.now() - timestamp.getTime() >= 24 * 60 * 60 * 1000;
+  return olderThanDay
+    ? timestamp.toLocaleString([], {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function renderConversations() {
@@ -1112,18 +1233,33 @@ function renderChat() {
     $("#channel").value = key.slice("channel:".length);
   }
   const connected = state.connection === "connected";
-  $("#channel").disabled = !connected || meta.type === "channel";
+  $("#channel").disabled = !connected;
   $("#messageText").disabled = !connected || !key;
   $("#messageText").placeholder = key
     ? `Съобщение до ${meta.title}…`
     : "Избери разговор…";
   $("#markConversationRead").disabled = !key || !(state.unread[key] > 0);
+  $("#closeConversation").disabled = !key || meta.type === "channel";
+  $("#closeConversation").title =
+    meta.type === "channel"
+      ? "Конфигурираните канали се управляват от Channel Manager"
+      : "Скрий разговора, без да изтриваш историята";
   updateByteCount();
 }
 
 function selectConversation(key) {
+  state.closedConversations.delete(key);
   state.selectedConversation = key;
   state.unread[key] = 0;
+  renderConversations();
+  renderChat();
+}
+
+function closeConversation() {
+  const key = state.selectedConversation;
+  if (!key || key.startsWith("channel:")) return;
+  state.closedConversations.add(key);
+  state.selectedConversation = null;
   renderConversations();
   renderChat();
 }
@@ -1220,14 +1356,25 @@ function renderNodes(nodes) {
 
   const query = $("#nodeSearch").value.trim().toLocaleLowerCase("bg");
   const transportFilter = $("#nodeTransportFilter").value;
+  const preferenceFilter = $("#nodePreferenceFilter").value;
+  const showSelf = $("#showSelfNode").checked;
   const staleBefore = Date.now() / 1000 - 24 * 60 * 60;
-  const filtered = nodes.filter((node) => {
+  const selfNodes = showSelf ? nodes.filter((node) => node.is_self) : [];
+  const filteredPeers = nodes.filter((node) => !node.is_self).filter((node) => {
     const matchesQuery =
       !query ||
       [node.long_name, node.short_name, node.id, node.hardware, node.role]
         .filter(Boolean)
         .some((value) => String(value).toLocaleLowerCase("bg").includes(query));
     if (!matchesQuery) return false;
+    if (preferenceFilter === "favorites" && !node.is_favorite) return false;
+    if (preferenceFilter === "ignored" && !node.is_ignored) return false;
+    if (
+      preferenceFilter === "normal" &&
+      (node.is_favorite || node.is_ignored)
+    ) {
+      return false;
+    }
     if (transportFilter === "mqtt") return node.via_mqtt;
     if (transportFilter === "direct")
       return !node.via_mqtt && node.hops_away != null && Number(node.hops_away) === 0;
@@ -1245,7 +1392,8 @@ function renderNodes(nodes) {
     battery: (left, right) =>
       (right.battery_level ?? -1) - (left.battery_level ?? -1),
   };
-  filtered.sort(sorters[$("#nodeSort").value] || sorters.recent);
+  filteredPeers.sort(sorters[$("#nodeSort").value] || sorters.recent);
+  const filtered = [...selfNodes, ...filteredPeers];
 
   const directCount = nodes.filter(
     (node) => !node.via_mqtt && node.hops_away != null && Number(node.hops_away) === 0,
@@ -1354,9 +1502,10 @@ function renderNodes(nodes) {
     });
   });
   container.querySelectorAll(".node-quick-action").forEach((button) => {
-    button.addEventListener("click", () =>
-      requestNodeAction(button.dataset.node, button.dataset.action),
-    );
+    button.addEventListener("click", () => {
+      openNodeInspector(button.dataset.node);
+      requestNodeAction(button.dataset.node, button.dataset.action);
+    });
   });
   container.querySelectorAll(".node-preference").forEach((button) => {
     button.addEventListener("click", () =>
@@ -2058,6 +2207,192 @@ async function refreshChannels() {
   }
 }
 
+function renderChannelEditor(slot) {
+  const form = $("#channelEditor");
+  if (!slot) {
+    form.className = "channel-editor empty-state";
+    form.textContent =
+      state.connection === "connected"
+        ? "Избери channel slot."
+        : "Свържи устройство, за да редактираш каналите.";
+    return;
+  }
+  const isPrimary = slot.index === 0;
+  const role = slot.enabled ? slot.role : "SECONDARY";
+  form.className = "channel-editor";
+  form.innerHTML = `
+    <div class="channel-editor-head">
+      <div>
+        <p class="eyebrow">CHANNEL SLOT ${escapeHtml(slot.index)}</p>
+        <h3>${escapeHtml(slot.display_name)}</h3>
+        <p>${slot.enabled ? `${slot.role} · ${slot.psk_state}` : "Свободен slot"}</p>
+      </div>
+      <span class="node-badge ${slot.encrypted ? "direct" : ""}">
+        ${slot.encrypted ? "encrypted" : "open"}
+      </span>
+    </div>
+    <div class="channel-editor-grid">
+      <label>
+        Role
+        <select id="channelRole" ${isPrimary ? "disabled" : ""}>
+          ${
+            isPrimary
+              ? '<option value="PRIMARY">PRIMARY</option>'
+              : `<option value="SECONDARY" ${
+                  role === "SECONDARY" ? "selected" : ""
+                }>SECONDARY</option>
+                <option value="DISABLED">DISABLED / премахни</option>`
+          }
+        </select>
+      </label>
+      <label>
+        Име
+        <input id="channelName" maxlength="10" value="${escapeHtml(slot.name || "")}"
+          placeholder="${isPrimary ? "Primary (по желание)" : "до 10 знака"}">
+      </label>
+      <label>
+        PSK действие
+        <select id="channelPskMode">
+          <option value="unchanged">Запази текущия</option>
+          <option value="random" ${slot.enabled ? "" : "selected"}>Нов random 256-bit</option>
+          <option value="default">Meshtastic default</option>
+          <option value="none">Без криптиране</option>
+          <option value="custom">Custom hex/base64</option>
+        </select>
+      </label>
+      <label class="channel-custom-psk hidden">
+        Custom PSK
+        <input id="channelPsk" type="password" autocomplete="new-password"
+          placeholder="0x… или base64:…">
+      </label>
+      <label>
+        Position precision
+        <input id="channelPositionPrecision" type="number" min="0" max="32"
+          value="${escapeHtml(slot.position_precision ?? 0)}">
+      </label>
+      <div class="channel-editor-flags">
+        <label class="checkbox">
+          <input id="channelUplink" type="checkbox" ${
+            slot.uplink_enabled ? "checked" : ""
+          }> MQTT uplink
+        </label>
+        <label class="checkbox">
+          <input id="channelDownlink" type="checkbox" ${
+            slot.downlink_enabled ? "checked" : ""
+          }> MQTT downlink
+        </label>
+      </div>
+      <p class="channel-secret-note wide">
+        MeshDesk не чете съществуващия PSK. „Запази текущия“ не променя ключа.
+        Random/custom ключът трябва да бъде конфигуриран и на останалите участници.
+      </p>
+    </div>
+    <div class="channel-editor-actions">
+      <button type="submit" class="primary">Запиши channel ${escapeHtml(slot.index)}</button>
+    </div>`;
+  $("#channelPskMode").addEventListener("change", () => {
+    $(".channel-custom-psk").classList.toggle(
+      "hidden",
+      $("#channelPskMode").value !== "custom",
+    );
+  });
+}
+
+function renderChannelSlots(slots) {
+  state.channelSlots = slots;
+  const list = $("#channelSlotList");
+  if (!slots.length) {
+    state.activeChannelSlot = null;
+    list.className = "channel-slot-list empty-state";
+    list.textContent =
+      state.connection === "connected"
+        ? "Радиото не върна channel slots."
+        : "Свържи устройство, за да заредиш channel slots.";
+    renderChannelEditor(null);
+    return;
+  }
+  if (!slots.some((slot) => slot.index === state.activeChannelSlot && slot.editable)) {
+    state.activeChannelSlot =
+      slots.find((slot) => slot.enabled)?.index ??
+      slots.find((slot) => slot.editable)?.index ??
+      null;
+  }
+  list.className = "channel-slot-list";
+  list.innerHTML = slots
+    .map(
+      (slot) => `
+        <button type="button" class="channel-slot ${
+          slot.index === state.activeChannelSlot ? "active" : ""
+        }" data-channel-slot="${escapeHtml(slot.index)}" ${
+          slot.editable ? "" : "disabled"
+        }>
+          <span class="channel-slot-index">${escapeHtml(slot.index)}</span>
+          <span class="channel-slot-copy">
+            <strong>${escapeHtml(slot.display_name)}</strong>
+            <span>${escapeHtml(
+              slot.enabled
+                ? `${slot.role} · ${slot.psk_state}`
+                : slot.editable
+                  ? "Свободен · следващ за добавяне"
+                  : "Свободен · добави предишния slot първо",
+            )}</span>
+          </span>
+          <span class="channel-slot-state">${slot.enabled ? "ON" : "OFF"}</span>
+        </button>`,
+    )
+    .join("");
+  list.querySelectorAll(".channel-slot").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeChannelSlot = Number(button.dataset.channelSlot);
+      renderChannelSlots(state.channelSlots);
+    });
+  });
+  renderChannelEditor(
+    slots.find((slot) => slot.index === state.activeChannelSlot) || null,
+  );
+}
+
+async function refreshChannelSlots() {
+  try {
+    const { channels } = await api("/api/channel-slots");
+    renderChannelSlots(channels);
+  } catch (error) {
+    toast(`Channel Manager: ${error.message}`, true);
+  }
+}
+
+async function saveChannel(event) {
+  event.preventDefault();
+  const slot = state.channelSlots.find(
+    (item) => item.index === state.activeChannelSlot,
+  );
+  if (!slot) return;
+  const role = $("#channelRole").value;
+  const destructive = role === "DISABLED";
+  const promptText = destructive
+    ? `Да премахна channel ${slot.index} „${slot.display_name}“? Следващите Secondary slots могат да бъдат пренаредени от firmware-а.`
+    : `Да запиша channel ${slot.index}? Участниците с различно име/PSK няма да могат да го използват.`;
+  if (!confirm(promptText)) return;
+  try {
+    await api(`/api/channel-slots/${slot.index}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        role,
+        name: $("#channelName").value,
+        psk_mode: $("#channelPskMode").value,
+        psk: $("#channelPsk")?.value || "",
+        uplink_enabled: $("#channelUplink").checked,
+        downlink_enabled: $("#channelDownlink").checked,
+        position_precision: Number($("#channelPositionPrecision").value || 0),
+      }),
+    });
+    await Promise.all([refreshChannelSlots(), refreshChannels()]);
+    toast(`Channel ${slot.index} е записан`);
+  } catch (error) {
+    toast(`Channel ${slot.index}: ${error.message}`, true);
+  }
+}
+
 function roleAdvisorCard(role, guidance) {
   return `<article class="role-advisor-card ${guidance.className}">
     <div class="role-advisor-card-head">
@@ -2507,6 +2842,7 @@ function addChatEvent(event) {
           ? `direct:${event.to}`
           : `channel:${event.channel ?? 0}`;
     if (!key) return;
+    state.closedConversations.delete(key);
     const messages = (state.chatMessages[key] ||= []);
     const eventId =
       event.event_id || `${event.profile_id || "legacy"}:${event.seq}:${event.time}`;
@@ -2729,6 +3065,11 @@ $("#pairingPin").addEventListener("keydown", (event) => {
   if (event.key === "Enter") submitPairingPin();
 });
 $("#messageForm").addEventListener("submit", sendMessage);
+$("#channel").addEventListener("change", () => {
+  if (state.selectedConversation?.startsWith("channel:")) {
+    selectConversation(`channel:${$("#channel").value}`);
+  }
+});
 $("#syncHistory").addEventListener("click", syncRadioHistory);
 $("#messageText").addEventListener("input", updateByteCount);
 $("#messageText").addEventListener("keydown", (event) => {
@@ -2739,6 +3080,7 @@ $("#messageText").addEventListener("keydown", (event) => {
 });
 $("#conversationSearch").addEventListener("input", renderConversations);
 $("#newDirectButton").addEventListener("click", openDirectModal);
+$("#closeConversation").addEventListener("click", closeConversation);
 $("#cancelDirect").addEventListener("click", closeDirectModal);
 $("#openDirect").addEventListener("click", createDirectConversation);
 $("#directRecipient").addEventListener("change", () => {
@@ -2754,8 +3096,14 @@ $("#directModal").addEventListener("click", (event) => {
 });
 $("#nodeSearch").addEventListener("input", () => renderNodes(state.nodes));
 $("#nodeTransportFilter").addEventListener("change", () => renderNodes(state.nodes));
+$("#nodePreferenceFilter").addEventListener("change", () => renderNodes(state.nodes));
+$("#showSelfNode").addEventListener("change", () => renderNodes(state.nodes));
 $("#nodeSort").addEventListener("change", () => renderNodes(state.nodes));
 $("#refreshNodes").addEventListener("click", refreshNodes);
+$("#reloadChannels").addEventListener("click", () =>
+  Promise.all([refreshChannelSlots(), refreshChannels()]),
+);
+$("#channelEditor").addEventListener("submit", saveChannel);
 $("#reloadConfig").addEventListener("click", refreshConfig);
 $("#configTarget").addEventListener("change", async () => {
   state.activeConfig = null;
@@ -2805,6 +3153,7 @@ $("#clearEvents").addEventListener("click", () => {
 $("#closeInspector").addEventListener("click", closeInspector);
 $("#inspectorBackdrop").addEventListener("click", closeInspector);
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") hideHelpTooltip();
   if (event.key === "Escape" && !$("#roleAdvisorModal").classList.contains("hidden")) {
     closeRoleAdvisor();
     return;
@@ -2820,6 +3169,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 organizeWorkspace();
+initHelpTips();
 refreshConnectionProfiles();
 refreshStatus();
 pollEvents();

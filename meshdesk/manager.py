@@ -14,12 +14,13 @@ from typing import Any
 from google.protobuf.json_format import MessageToDict, ParseDict
 from google.protobuf.message import Message
 from meshtastic.protobuf import (
+    channel_pb2,
     mesh_pb2,
     portnums_pb2,
     storeforward_pb2,
     telemetry_pb2,
 )
-from meshtastic.util import to_node_num
+from meshtastic.util import fromPSK, pskToString, to_node_num
 from pubsub import pub
 
 from meshdesk.history import EncryptedHistory
@@ -427,10 +428,173 @@ class MeshtasticManager:
                     "uplink_enabled": settings.uplink_enabled,
                     "downlink_enabled": settings.downlink_enabled,
                     "position_precision": settings.module_settings.position_precision,
-                    "encrypted": bool(settings.psk),
+                    "encrypted": pskToString(settings.psk) != "unencrypted",
                 }
             )
         return result
+
+    def channel_slots(self) -> list[dict[str, Any]]:
+        with self._lock:
+            interface = self._interface
+            if interface is None:
+                return []
+            raw_channels = list(interface.localNode.channels or [])
+
+        disabled = [
+            channel.index
+            for channel in raw_channels
+            if channel.Role.Name(channel.role) == "DISABLED"
+        ]
+        first_free = min(disabled) if disabled else None
+        result = []
+        for channel in sorted(raw_channels, key=lambda item: item.index):
+            role = channel.Role.Name(channel.role)
+            settings = channel.settings
+            psk_state = pskToString(settings.psk)
+            result.append(
+                {
+                    "index": channel.index,
+                    "name": settings.name,
+                    "display_name": settings.name
+                    or (
+                        "Primary"
+                        if channel.index == 0
+                        else f"Channel {channel.index}"
+                    ),
+                    "role": role,
+                    "enabled": role != "DISABLED",
+                    "uplink_enabled": settings.uplink_enabled,
+                    "downlink_enabled": settings.downlink_enabled,
+                    "position_precision": settings.module_settings.position_precision,
+                    "psk_state": psk_state,
+                    "encrypted": psk_state != "unencrypted",
+                    "editable": role != "DISABLED" or channel.index == first_free,
+                    "can_disable": channel.index > 0 and role != "DISABLED",
+                }
+            )
+        return result
+
+    def update_channel(
+        self,
+        index: int,
+        role: str,
+        name: str,
+        psk_mode: str,
+        psk: str,
+        uplink_enabled: bool,
+        downlink_enabled: bool,
+        position_precision: int,
+    ) -> list[dict[str, Any]]:
+        if not 0 <= index <= 7:
+            raise ValueError("Channel index must be between 0 and 7")
+        if role not in {"PRIMARY", "SECONDARY", "DISABLED"}:
+            raise ValueError("Unsupported channel role")
+        if index == 0 and role != "PRIMARY":
+            raise ValueError("Channel 0 must remain PRIMARY")
+        if index > 0 and role == "PRIMARY":
+            raise ValueError("Only channel 0 can be PRIMARY")
+        name = name.strip()
+        if len(name) > 10:
+            raise ValueError("Channel name must contain at most 10 characters")
+        if role == "SECONDARY" and not name:
+            raise ValueError("A SECONDARY channel requires a name")
+        if psk_mode not in {"unchanged", "random", "default", "none", "custom"}:
+            raise ValueError("Unsupported channel PSK mode")
+        if not 0 <= position_precision <= 32:
+            raise ValueError("Position precision must be between 0 and 32 bits")
+
+        interface = self._connected_interface()
+        with self._command_lock:
+            channels = list(interface.localNode.channels or [])
+            by_index = {channel.index: channel for channel in channels}
+            channel = by_index.get(index)
+            if channel is None:
+                raise ValueError(f"Channel slot {index} is not available")
+            current_role = channel.Role.Name(channel.role)
+
+            if role == "DISABLED":
+                if index == 0:
+                    raise ValueError("The PRIMARY channel cannot be disabled")
+                if current_role == "DISABLED":
+                    return self.channel_slots()
+                interface.localNode.deleteChannel(index)
+                self._add_event(
+                    "channel_config",
+                    operation="disable",
+                    channel=index,
+                    role="DISABLED",
+                )
+                return self.channel_slots()
+
+            if current_role == "DISABLED":
+                first_free = min(
+                    item.index
+                    for item in channels
+                    if item.Role.Name(item.role) == "DISABLED"
+                )
+                if index != first_free:
+                    raise ValueError(
+                        f"Enable channel {first_free} first to keep slots contiguous"
+                    )
+
+            duplicate = next(
+                (
+                    item
+                    for item in channels
+                    if item.index != index
+                    and item.Role.Name(item.role) != "DISABLED"
+                    and item.settings.name.casefold() == name.casefold()
+                    and name
+                ),
+                None,
+            )
+            if duplicate is not None:
+                raise ValueError(
+                    f"Channel name '{name}' is already used by slot {duplicate.index}"
+                )
+
+            candidate = channel_pb2.Channel()
+            candidate.CopyFrom(channel)
+            candidate.role = channel_pb2.Channel.Role.Value(role)
+            candidate.settings.name = name
+            candidate.settings.uplink_enabled = uplink_enabled
+            candidate.settings.downlink_enabled = downlink_enabled
+            candidate.settings.module_settings.position_precision = position_precision
+
+            effective_psk_mode = psk_mode
+            if current_role == "DISABLED" and psk_mode == "unchanged":
+                effective_psk_mode = "random"
+            if effective_psk_mode == "custom":
+                parsed_psk = fromPSK(psk.strip())
+                if not isinstance(parsed_psk, bytes) or len(parsed_psk) not in {
+                    16,
+                    32,
+                }:
+                    raise ValueError(
+                        "Custom PSK must be 16/32-byte 0x hex or base64 data"
+                    )
+                candidate.settings.psk = parsed_psk
+            elif effective_psk_mode != "unchanged":
+                candidate.settings.psk = fromPSK(effective_psk_mode)
+
+            original = channel_pb2.Channel()
+            original.CopyFrom(channel)
+            channel.CopyFrom(candidate)
+            try:
+                interface.localNode.writeChannel(index)
+            except Exception:
+                channel.CopyFrom(original)
+                raise
+
+        self._add_event(
+            "channel_config",
+            operation="update",
+            channel=index,
+            role=role,
+            name=name or "Primary",
+            psk_changed=effective_psk_mode != "unchanged",
+        )
+        return self.channel_slots()
 
     def send_text(
         self,

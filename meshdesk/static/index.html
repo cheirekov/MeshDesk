@@ -163,7 +163,11 @@
             <div class="conversation-heading">
               <div>
                 <p class="eyebrow">СЪОБЩЕНИЯ</p>
-                <h2>Разговори</h2>
+                <h2>Разговори
+                  <span class="help-trigger" tabindex="0" role="button"
+                    aria-label="Помощ за разговорите"
+                    data-help="Каналите идват от радиото. Разговорите могат да се скриват и отварят отново, без да се изтрива локалната история.">i</span>
+                </h2>
               </div>
               <button id="newDirectButton" type="button" class="icon-button"
                 title="Нов личен разговор" disabled>＋</button>
@@ -192,6 +196,8 @@
                 </button>
                 <button id="markConversationRead" type="button" class="ghost"
                   title="Маркирай разговора като прочетен">Прочетено</button>
+                <button id="closeConversation" type="button" class="ghost"
+                  title="Скрий разговора, без да изтриваш историята">Затвори</button>
               </div>
             </div>
 
@@ -203,7 +209,11 @@
               <textarea id="messageText" rows="2" placeholder="Избери разговор…" disabled></textarea>
               <div class="composer-toolbar">
                 <label class="composer-channel">
-                  Канал
+                  <span>Канал
+                    <span class="help-trigger" tabindex="0" role="button"
+                      aria-label="Помощ за канала на съобщението"
+                      data-help="При channel разговор изборът преминава към друг канал. При лично съобщение определя channel slot-а за изпращане.">i</span>
+                  </span>
                   <select id="channel" disabled>
                     <option value="0">0 · Primary</option>
                   </select>
@@ -211,6 +221,9 @@
                 <label class="checkbox composer-ack">
                   <input id="wantAck" type="checkbox" checked disabled>
                   ACK
+                  <span class="help-trigger" tabindex="0" role="button"
+                    aria-label="Помощ за ACK"
+                    data-help="Иска routing acknowledgment. ACK потвърждава доставка до целта, а NAK показва routing грешка.">i</span>
                 </label>
                 <span id="byteCount">0 / 230 bytes</span>
                 <button id="sendButton" type="submit" class="primary" disabled>Изпрати</button>
@@ -220,11 +233,49 @@
         </div>
       </section>
 
+      <details id="channelPanel" class="panel channel-panel">
+        <summary>
+          <div>
+            <p class="eyebrow">КАНАЛИ</p>
+            <h2>Primary и Secondary
+              <span class="help-trigger" tabindex="0" role="button"
+                aria-label="Помощ за Channel Manager"
+                data-help="Primary е основният slot 0. Secondary каналите са допълнителни разговори. Името и PSK трябва да съвпадат при всички участници.">i</span>
+            </h2>
+          </div>
+          <span class="details-hint">Покажи</span>
+        </summary>
+        <div class="channel-panel-body">
+          <div class="channel-manager-intro">
+            <div>
+              <strong>Channel Manager</strong>
+              <p>Управлява локално свързаното радио. Тайният PSK никога не се
+                прочита или показва; може да бъде запазен, заменен или изключен.</p>
+            </div>
+            <button id="reloadChannels" type="button" class="ghost" disabled>
+              Презареди
+            </button>
+          </div>
+          <div class="channel-manager-layout">
+            <nav id="channelSlotList" class="channel-slot-list empty-state">
+              Свържи устройство, за да заредиш channel slots.
+            </nav>
+            <form id="channelEditor" class="channel-editor empty-state">
+              Избери channel slot.
+            </form>
+          </div>
+        </div>
+      </details>
+
       <section class="panel nodes-panel">
         <div class="section-title">
           <div>
             <p class="eyebrow">МРЕЖА</p>
-            <h2>Възли <span id="nodeCount">0</span></h2>
+            <h2>Възли <span id="nodeCount">0</span>
+              <span class="help-trigger" tabindex="0" role="button"
+                aria-label="Помощ за списъка с възли"
+                data-help="Собственото радио стои първо. Филтрите се прилагат върху remote peers; собственото радио може да се скрие отделно.">i</span>
+            </h2>
           </div>
           <button id="refreshNodes" class="ghost" disabled>Обнови</button>
         </div>
@@ -245,6 +296,15 @@
             </select>
           </label>
           <label>
+            Статус
+            <select id="nodePreferenceFilter">
+              <option value="all">Всички</option>
+              <option value="favorites">Само любими</option>
+              <option value="ignored">Само игнорирани</option>
+              <option value="normal">Без preference</option>
+            </select>
+          </label>
+          <label>
             Подреждане
             <select id="nodeSort">
               <option value="recent">Последно чути</option>
@@ -253,6 +313,10 @@
               <option value="hops">Брой хопове</option>
               <option value="battery">Батерия</option>
             </select>
+          </label>
+          <label class="checkbox network-self-toggle">
+            <input id="showSelfNode" type="checkbox" checked>
+            Покажи собственото радио
           </label>
         </div>
         <div id="networkSummary" class="network-summary"></div>
@@ -265,7 +329,11 @@
         <summary>
           <div>
             <p class="eyebrow">ДИАГНОСТИКА</p>
-            <h2>Пакети и състояние</h2>
+            <h2>Пакети и състояние
+              <span class="help-trigger" tabindex="0" role="button"
+                aria-label="Помощ за диагностиката"
+                data-help="Показва transport, routing и application събития. При disconnect изгледът се изчиства до причината за прекъсване.">i</span>
+            </h2>
           </div>
           <span class="details-hint">Покажи</span>
         </summary>
@@ -280,7 +348,11 @@
         <summary>
           <div>
             <p class="eyebrow">АДМИНИСТРАЦИЯ</p>
-            <h2>Управление и възстановяване</h2>
+            <h2>Управление и възстановяване
+              <span class="help-trigger" tabindex="0" role="button"
+                aria-label="Помощ за администрацията"
+                data-help="Командите променят избраното managed устройство. Remote действията изискват разрешен PKI admin key.">i</span>
+            </h2>
           </div>
           <span class="details-hint">Покажи</span>
         </summary>
@@ -360,7 +432,11 @@
         <summary class="config-summary">
           <div>
             <p class="eyebrow">НАСТРОЙКИ</p>
-            <h2>Конфигурация на устройството</h2>
+            <h2>Конфигурация на устройството
+              <span class="help-trigger" tabindex="0" role="button"
+                aria-label="Помощ за конфигурацията"
+                data-help="Radio и module секциите се записват директно. Използвай постоянните предупреждения и section guidance преди промени по LoRa, Network, Bluetooth или Security.">i</span>
+            </h2>
           </div>
           <span class="details-hint">Покажи</span>
         </summary>
@@ -541,6 +617,7 @@
     </aside>
 
     <div id="toast" role="status" aria-live="polite"></div>
+    <div id="helpTooltip" class="help-tooltip hidden" role="tooltip"></div>
     <script src="/app.js"></script>
   </body>
 </html>

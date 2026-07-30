@@ -47,10 +47,11 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 
 ## M2 — Channel Manager
 
-- [ ] Списък на всички channel slots, включително disabled.
-- [ ] Добавяне, редактиране, пренареждане и изтриване.
-- [ ] PRIMARY/SECONDARY правила и предварителна валидация.
-- [ ] Генериране/въвеждане на PSK без показване в логовете.
+- [x] Списък на всички channel slots, включително disabled.
+- [x] Добавяне, редактиране и изтриване.
+- [ ] Explicit пренареждане на Secondary slots.
+- [x] PRIMARY/SECONDARY правила и предварителна валидация.
+- [x] Генериране/въвеждане на PSK без показване в логовете.
 - [ ] Channel URL и QR import/export.
 - [ ] Preview и backup преди запис.
 - [ ] Remote channel administration при поддържан firmware.

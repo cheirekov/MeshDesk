@@ -28,6 +28,45 @@ class StubManager:
     def nodes(self):
         return []
 
+    def channels(self):
+        return []
+
+    def channel_slots(self):
+        return [
+            {
+                "index": 0,
+                "name": "Main",
+                "display_name": "Main",
+                "role": "PRIMARY",
+            }
+        ]
+
+    def update_channel(
+        self,
+        index,
+        role,
+        name,
+        psk_mode,
+        psk,
+        uplink,
+        downlink,
+        position_precision,
+    ):
+        self.calls.append(
+            (
+                "channel",
+                index,
+                role,
+                name,
+                psk_mode,
+                psk,
+                uplink,
+                downlink,
+                position_precision,
+            )
+        )
+        return self.channel_slots()
+
     def events(self, after):
         return [{"seq": after + 1}]
 
@@ -258,6 +297,38 @@ def test_node_action_endpoint():
         "device",
         4,
         None,
+    )
+
+
+def test_channel_manager_endpoints():
+    manager = StubManager()
+    with TestClient(create_app(manager)) as client:
+        listing = client.get("/api/channel-slots")
+        updated = client.put(
+            "/api/channel-slots/1",
+            json={
+                "role": "SECONDARY",
+                "name": "Ops",
+                "psk_mode": "random",
+                "uplink_enabled": True,
+                "downlink_enabled": False,
+                "position_precision": 12,
+            },
+        )
+
+    assert listing.status_code == 200
+    assert listing.json()["channels"][0]["role"] == "PRIMARY"
+    assert updated.status_code == 200
+    assert manager.calls[0] == (
+        "channel",
+        1,
+        "SECONDARY",
+        "Ops",
+        "random",
+        "",
+        True,
+        False,
+        12,
     )
 
 

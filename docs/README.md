@@ -23,6 +23,8 @@
   групови NodeDB и configuration операции.
 - [Remote NodeDB favorite/ignore](REMOTE-NODEDB.md) — разликата между managed
   и subject node, както и значението на ACK/NAK/timeout.
+- [Channel Manager](CHANNEL-MANAGER.md) — Primary/Secondary правила,
+  secret-safe PSK промени и граници на първата версия.
 
 ## Принцип
 

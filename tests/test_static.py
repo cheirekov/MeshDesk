@@ -67,3 +67,21 @@ def test_configuration_has_contextual_guidance() -> None:
     assert "configSectionGuidance" in script.text
     assert 'id="configGuidance"' in script.text
     assert "renderConfigGuidance(section)" in script.text
+
+
+def test_chat_network_and_channel_manager_have_stable_controls() -> None:
+    app = create_app(manager=StaticManager())
+
+    with TestClient(app) as client:
+        page = client.get("/")
+        script = client.get("/app.js")
+
+    assert 'id="closeConversation"' in page.text
+    assert 'id="channelPanel"' in page.text
+    assert 'id="channelSlotList"' in page.text
+    assert 'id="nodePreferenceFilter"' in page.text
+    assert 'id="showSelfNode"' in page.text
+    assert 'id="helpTooltip"' in page.text
+    assert "clearDeviceBoundUi" in script.text
+    assert "refreshChannelSlots" in script.text
+    assert "olderThanDay" in script.text
