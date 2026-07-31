@@ -936,6 +936,7 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   box-shadow: 0 12px 30px #0009;
   font-size: 0.72rem;
   line-height: 1.45;
+  white-space: pre-line;
   pointer-events: none;
 }
 .nodes {
@@ -1233,6 +1234,19 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   background: #0a1713;
   font-size: 0.65rem;
 }
+.route-node-copy strong,
+.route-node-copy small { display: block; }
+.route-node-copy strong {
+  max-width: 5.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.route-node-copy small {
+  margin-top: 2px;
+  color: var(--muted);
+  font: 0.52rem ui-monospace, monospace;
+}
 .route-node:not(:last-child)::after {
   content: "→";
   margin-left: 5px;
@@ -1242,6 +1256,14 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 .metric-table td { padding: 7px 4px; border-bottom: 1px solid #1e312b; font-size: 0.7rem; }
 .metric-table td:first-child { color: var(--muted); }
 .metric-table td:last-child { text-align: right; font-family: ui-monospace, monospace; }
+.metric-table td:first-child span,
+.metric-table td:first-child small { display: block; }
+.metric-table td:first-child span { color: #b8c8c2; }
+.metric-table td:first-child small {
+  margin-top: 2px;
+  color: #62776f;
+  font: 0.56rem ui-monospace, monospace;
+}
 .neighbor-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1695,6 +1717,15 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   background: #081310;
 }
 .config-toggle input { width: auto; accent-color: var(--green); }
+.config-field-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 5px;
+  color: #71867e;
+  font: 0.58rem/1.35 ui-monospace, monospace;
+}
+.config-toggle .config-field-meta { margin-top: 4px; }
 
 #toast {
   position: fixed;

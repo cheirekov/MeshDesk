@@ -114,7 +114,12 @@ disabled. От нея могат да се добавят, редактират 
 помощ при hover, click или keyboard focus. Обясненията покриват предназначение,
 единици, връзка с хардуера и риск от загуба на достъп. Критичните предупреждения
 остават постоянно видими, а непознати полета от по-нов firmware получават
-безопасен type-aware fallback.
+безопасен type-aware fallback. Всяко scalar поле получава автоматично protobuf
+тип, protocol default, типов домейн и консервативна препоръка. За параметрите с
+потвърдени Meshtastic ограничения се показват отделно firmware default,
+min/max, единица и практическа препоръка. Така protobuf `0` не се представя
+погрешно като реалния role-aware firmware default. Непозната стойност от по-нов
+firmware се запазва като избор, вместо формата тихо да я замени.
 
 Картата **Мрежа** поддържа търсене, филтриране по direct/mesh/MQTT и сортиране
 по активност, име, сигнал, хопове или батерия. **Подробности** отваря страничен
@@ -137,11 +142,19 @@ Node Inspector с пълния NodeDB запис, telemetry, позиция, rad
 заявка. Ако firmware TX опашката е пълна, съобщението остава видимо като
 **в радио опашката**, докато `meshtastic-python` получи свободен slot.
 
-Neighbor Info резултатът има специализиран изглед: отчитащ възел, последен
-препращач, broadcast interval и таблица на директно чуваните съседи с node
-име/ID, SNR и време на последно приемане. Еднакви `nodeId` и `lastSentById`
-означават директен отчет от първоизточника. Пълният protobuf packet е достъпен
-само в сгъваемото **Raw Neighbor Info packet**, без дублиране в таблицата.
+Neighbor Info резултатът има специализиран изглед: отчитащ възел, LoRa relay
+marker, broadcast interval, radio метрики на отговора и таблица на директно
+чуваните съседи с node име/ID и SNR. Колони като per-neighbor last RX и interval
+се показват само ако реално присъстват — firmware умишлено не ги изпраща през
+LoRa. Липсващ optional SNR е `—`, а не измерена нула. Пълният protobuf packet е
+достъпен само в сгъваемото **Raw Neighbor Info packet**.
+
+Telemetry и position резултатите се форматират в операторски метрики: battery
+percent, V/A, channel utilization и airtime в %, SNR/RSSI в dB/dBm, разстояния
+и височини в mm/m, GPS координати, DOP, timestamps, packet counters и memory в
+четими единици. Raw field path остава като ненатрапчив вторичен ред. Traceroute
+показва краткото име върху hop-а, node ID под него и пълното име в tooltip, за
+да остане четим и при имена с emoji.
 
 В Node Inspector може да се избере чия NodeDB се променя: на локалното gateway
 радио или на разрешен remote-admin node. Remote операцията изисква PKI достъп и

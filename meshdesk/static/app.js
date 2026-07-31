@@ -242,7 +242,7 @@ const configSectionGuidance = {
     bullets: [
       "Не споделяй private key и не го включвай в bug reports.",
       "Admin key дава право за отдалечена конфигурация.",
-      "Направи защитен backup преди re-key или factory reset.",
+      "Binary identity/admin keys са read-only; защитен backup и re-key workflow са в roadmap.",
     ],
   },
   network: {
@@ -354,7 +354,7 @@ const configFieldHelp = {
     rsyslog_server:
       "Адрес на remote syslog сървър. Изпращането на diagnostics извън устройството има privacy и network ефект.",
     enabled_protocols:
-      "Bitmask на разрешените IP услуги. Неправилна стойност може да спре очакван TCP/API достъп.",
+      "Флагове само за auxiliary IP broadcast. 0 означава без такъв broadcast; 1 включва UDP broadcast в локалната мрежа. Това не изключва TCP API на порт 4403.",
     ipv6_enabled: "Разрешава IPv6 при поддържана мрежа и firmware.",
   },
   display: {
@@ -477,29 +477,50 @@ const configFieldHelp = {
   },
 };
 
+function configMetadataLines(field) {
+  const metadata = field.metadata || {};
+  const lines = [];
+  if (metadata.protocol_type) lines.push(`Тип: ${metadata.protocol_type}`);
+  if (metadata.default != null) lines.push(`Firmware default: ${metadata.default}`);
+  if (metadata.protocol_default != null) {
+    lines.push(`Protocol default: ${metadata.protocol_default}`);
+  }
+  if (metadata.minimum != null || metadata.maximum != null) {
+    const minimum = metadata.minimum ?? "без зададен минимум";
+    const maximum = metadata.maximum ?? "без зададен максимум";
+    lines.push(`Range: ${minimum} – ${maximum}${metadata.unit ? ` ${metadata.unit}` : ""}`);
+  } else if (metadata.unit) {
+    lines.push(`Единица: ${metadata.unit}`);
+  }
+  if (metadata.domain) lines.push(`Допустими стойности: ${metadata.domain}`);
+  if (metadata.recommended) lines.push(`Препоръчително: ${metadata.recommended}`);
+  if (metadata.choices?.length) {
+    lines.push(`Стойности: ${metadata.choices.map((choice) => choice.label).join("; ")}`);
+  }
+  if (metadata.note) lines.push(`Важно: ${metadata.note}`);
+  return lines;
+}
+
 function configHelpFor(sectionName, field) {
   const explicit = configFieldHelp[sectionName]?.[field.name];
-  if (explicit) return explicit;
   const path = `${sectionName}.${field.name}`;
-  if (field.secret) {
-    return `${path} е чувствителна стойност. MeshDesk не показва текущото съдържание; празно поле го оставя непроменено.`;
+  let help = explicit;
+  if (!help && field.secret) {
+    help = `${path} е чувствителна стойност. MeshDesk не показва текущото съдържание; празно поле го оставя непроменено.`;
+  } else if (!help && field.read_only) {
+    help = `${path} е read-only в MeshDesk, за да не бъде променено или разкрито опасно binary поле.`;
+  } else if (!help && (field.name.endsWith("_gpio") || field.name.endsWith("_pin"))) {
+    help = `${path} избира физически GPIO pin. Провери pinout-а на точната платка, защото грешна стойност може да конфликтува с друг хардуер.`;
+  } else if (!help && (field.name.endsWith("_secs") || field.name.endsWith("_interval"))) {
+    help = `${path} е времеви интервал, обикновено в секунди. По-малка стойност може да увеличи консумацията, packet rate или LoRa airtime.`;
+  } else if (!help && (field.name.endsWith("_enabled") || field.type === "bool")) {
+    help = `${path} включва или изключва firmware поведение. Наличността и ефектът може да зависят от хардуера и firmware версията.`;
+  } else if (!help && field.type === "enum") {
+    help = `${path} избира един от режимите, поддържани от текущия firmware. Запази recovery transport преди промяна на непознат режим.`;
+  } else if (!help) {
+    help = `${path} е Meshtastic firmware параметър. Променяй го само когато знаеш очакваната единица и допустимия диапазон за конкретния хардуер.`;
   }
-  if (field.read_only) {
-    return `${path} е read-only в MeshDesk, за да не бъде променено или разкрито опасно binary поле.`;
-  }
-  if (field.name.endsWith("_gpio") || field.name.endsWith("_pin")) {
-    return `${path} избира физически GPIO pin. Провери pinout-а на точната платка, защото грешна стойност може да конфликтува с друг хардуер.`;
-  }
-  if (field.name.endsWith("_secs") || field.name.endsWith("_interval")) {
-    return `${path} е времеви интервал, обикновено в секунди. По-малка стойност може да увеличи консумацията, packet rate или LoRa airtime.`;
-  }
-  if (field.name.endsWith("_enabled") || field.type === "bool") {
-    return `${path} включва или изключва firmware поведение. Наличността и ефектът може да зависят от хардуера и firmware версията.`;
-  }
-  if (field.type === "enum") {
-    return `${path} избира един от режимите, поддържани от текущия firmware. Запази recovery transport преди промяна на непознат режим.`;
-  }
-  return `${path} е Meshtastic firmware параметър. Променяй го само когато знаеш очакваната единица и допустимия диапазон за конкретния хардуер.`;
+  return [help, ...configMetadataLines(field)].join("\n");
 }
 
 function helpTrigger(help, label) {
@@ -1853,14 +1874,200 @@ function valueOrDash(value, suffix = "") {
   return value == null || value === "" ? "—" : `${value}${suffix}`;
 }
 
+const metricDefinitions = {
+  battery_level: ["Батерия", "%"],
+  voltage: ["Напрежение", "V"],
+  channel_utilization: ["Използване на канала", "%"],
+  air_util_tx: ["TX airtime за последния час", "%"],
+  uptime_seconds: ["Време от последния рестарт", "duration"],
+  temperature: ["Температура", "°C"],
+  relative_humidity: ["Относителна влажност", "%"],
+  barometric_pressure: ["Атмосферно налягане", "hPa"],
+  gas_resistance: ["Газово съпротивление", "MΩ"],
+  current: ["Ток", "A"],
+  iaq: ["Indoor Air Quality индекс", "0–500"],
+  distance: ["Разстояние", "mm_distance"],
+  lux: ["Осветеност", "lx"],
+  white_lux: ["Бяла светлина", "lx"],
+  ir_lux: ["Инфрачервена светлина", "lx"],
+  uv_lux: ["UV осветеност", "lx"],
+  wind_direction: ["Посока на вятъра", "°"],
+  wind_speed: ["Скорост на вятъра", "m/s"],
+  wind_gust: ["Порив на вятъра", "m/s"],
+  wind_lull: ["Минимален вятър", "m/s"],
+  weight: ["Тегло", "kg"],
+  radiation: ["Радиация", "µR/h"],
+  rainfall_1h: ["Валеж за 1 час", "mm"],
+  rainfall_24h: ["Валеж за 24 часа", "mm"],
+  soil_moisture: ["Влажност на почвата", "%"],
+  soil_temperature: ["Температура на почвата", "°C"],
+  one_wire_temperature: ["One-wire температура", "°C"],
+  co2: ["CO₂", "ppm"],
+  co2_temperature: ["Температура на CO₂ сензора", "°C"],
+  co2_humidity: ["Влажност на CO₂ сензора", "%"],
+  form_formaldehyde: ["Формалдехид", "ppb"],
+  form_humidity: ["Влажност на формалдехидния сензор", "% RH"],
+  form_temperature: ["Температура на формалдехидния сензор", "°C"],
+  pm_temperature: ["Температура на PM сензора", "°C"],
+  pm_humidity: ["Влажност на PM сензора", "%"],
+  noise_floor: ["Noise floor", "dBm"],
+  num_packets_tx: ["Предадени пакети", "count"],
+  num_packets_rx: ["Приети пакети", "count"],
+  num_packets_rx_bad: ["Повредени приети пакети", "count"],
+  num_online_nodes: ["Активни възли", "count"],
+  num_total_nodes: ["Всички известни възли", "count"],
+  num_rx_dupe: ["Дублирани приети пакети", "count"],
+  num_tx_relay: ["Препредадени пакети", "count"],
+  num_tx_relay_canceled: ["Отменени препредавания", "count"],
+  num_tx_dropped: ["Отпаднали TX пакети", "count"],
+  heap_total_bytes: ["Обща heap памет", "bytes"],
+  heap_free_bytes: ["Свободна heap памет", "bytes"],
+  freemem_bytes: ["Свободна RAM", "bytes"],
+  diskfree1_bytes: ["Свободно място /", "bytes"],
+  diskfree2_bytes: ["Свободно място disk 2", "bytes"],
+  diskfree3_bytes: ["Свободно място disk 3", "bytes"],
+  latitude: ["Географска ширина", "degrees"],
+  longitude: ["Географска дължина", "degrees"],
+  latitude_i: ["Географска ширина", "coordinate_i"],
+  longitude_i: ["Географска дължина", "coordinate_i"],
+  altitude: ["Надморска височина (MSL)", "m"],
+  altitude_hae: ["Височина над елипсоида (HAE)", "m"],
+  altitude_geoidal_separation: ["Геоидно разделение", "m"],
+  gps_accuracy: ["Базова GPS точност", "mm_distance"],
+  ground_speed: ["Скорост спрямо земята", "m/s"],
+  ground_track: ["Посока на движение", "track_degree"],
+  pdop: ["Position dilution of precision", "hundredth"],
+  hdop: ["Horizontal dilution of precision", "hundredth"],
+  vdop: ["Vertical dilution of precision", "hundredth"],
+  fix_quality: ["Качество на GPS fix", "count"],
+  fix_type: ["Тип на GPS fix", "count"],
+  sats_in_view: ["Видими GPS сателити", "count"],
+  sensor_id: ["ID на position сензора", "count"],
+  next_update: ["Очаквана следваща позиция", "duration"],
+  timestamp_millis_adjust: ["Корекция към timestamp", "ms"],
+  location_source: ["Източник на позицията", "text"],
+  altitude_source: ["Източник на височината", "text"],
+  precision_bits: ["Точност на споделената позиция", "bits"],
+  time: ["Време на измерването", "epoch"],
+  timestamp: ["Време на позицията", "epoch"],
+  snr: ["Signal-to-noise ratio", "dB"],
+  rssi: ["Получен сигнал", "dBm"],
+  heart_bpm: ["Пулс", "bpm"],
+  sp_o2: ["Кислородна сатурация", "%"],
+  pm_voc_idx: ["VOC индекс", "index"],
+  pm_nox_idx: ["NOx индекс", "index"],
+  particles_tps: ["Типичен размер на частиците", "µm"],
+};
+
+function normalizedMetricKey(key) {
+  return String(key || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .toLowerCase();
+}
+
+function friendlyMetricLabel(key) {
+  const normalized = normalizedMetricKey(key);
+  if (metricDefinitions[normalized]) return metricDefinitions[normalized][0];
+  if (/^ch\d+_voltage$/.test(normalized)) {
+    return `Напрежение · канал ${normalized.match(/\d+/)[0]}`;
+  }
+  if (/^ch\d+_current$/.test(normalized)) {
+    return `Ток · канал ${normalized.match(/\d+/)[0]}`;
+  }
+  if (/^pm(10|25|40|100)_(standard|environmental)$/.test(normalized)) {
+    const size = { 10: "1.0", 25: "2.5", 40: "4.0", 100: "10.0" }[
+      normalized.match(/^pm(10|25|40|100)/)[1]
+    ];
+    return `PM${size} концентрация`;
+  }
+  if (/^particles_\d+um$/.test(normalized)) {
+    const size = normalized.match(/particles_(\d+)um/)[1];
+    return `Частици ≥ ${(Number(size) / 10).toFixed(1)} µm`;
+  }
+  return normalized.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function formatByteCount(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes)) return valueOrDash(value);
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let scaled = bytes;
+  let unit = -1;
+  do {
+    scaled /= 1024;
+    unit += 1;
+  } while (scaled >= 1024 && unit < units.length - 1);
+  return `${scaled.toFixed(scaled >= 10 ? 1 : 2)} ${units[unit]}`;
+}
+
+function formatDurationSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return valueOrDash(value);
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const parts = [];
+  if (days) parts.push(`${days} d`);
+  if (hours) parts.push(`${hours} h`);
+  if (minutes || !parts.length) parts.push(`${minutes} min`);
+  return `${parts.join(" ")} (${seconds} s)`;
+}
+
+function formatMetricValue(key, value) {
+  const normalized = normalizedMetricKey(key);
+  let unit = metricDefinitions[normalized]?.[1];
+  if (/^ch\d+_voltage$/.test(normalized)) unit = "V";
+  if (/^ch\d+_current$/.test(normalized)) unit = "A";
+  if (/^pm(10|25|40|100)_(standard|environmental)$/.test(normalized)) unit = "µg/m³";
+  if (/^particles_\d+um$/.test(normalized)) unit = "#/0.1 L";
+  if (/^load(1|5|15)$/.test(normalized)) {
+    return `${(Number(value) / 100).toFixed(2)} load`;
+  }
+  if (unit === "duration") return formatDurationSeconds(value);
+  if (unit === "bytes") return formatByteCount(value);
+  if (unit === "epoch") {
+    const seconds = Number(value);
+    return seconds ? new Date(seconds * 1000).toLocaleString() : "не е зададено";
+  }
+  if (unit === "degrees") return `${Number(value).toFixed(6)}°`;
+  if (unit === "coordinate_i") return `${(Number(value) / 1e7).toFixed(6)}°`;
+  if (unit === "track_degree") return `${(Number(value) * 1e-5).toFixed(2)}°`;
+  if (unit === "hundredth") return `${(Number(value) / 100).toFixed(2)}`;
+  if (unit === "mm_distance") {
+    const millimeters = Number(value);
+    return `${millimeters.toLocaleString()} mm (${(millimeters / 1000).toFixed(3)} m)`;
+  }
+  if (unit === "bits") return `${value} bits`;
+  if (unit === "count" || unit === "index" || unit === "text") return String(value);
+  if (unit === "0–500") return `${value} / 500`;
+  if (unit) {
+    const numeric = Number(value);
+    const formatted = Number.isFinite(numeric)
+      ? numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })
+      : value;
+    return `${formatted} ${unit}`;
+  }
+  return Array.isArray(value) ? value.join(", ") : valueOrDash(value);
+}
+
 function flattenMetrics(value, prefix = "") {
   const rows = [];
   Object.entries(value || {}).forEach(([key, item]) => {
     const label = prefix ? `${prefix} · ${key}` : key;
     if (item && typeof item === "object" && !Array.isArray(item)) {
       rows.push(...flattenMetrics(item, label));
+    } else if (Array.isArray(item) && item.some((entry) => entry && typeof entry === "object")) {
+      item.forEach((entry, index) => {
+        if (entry && typeof entry === "object") {
+          rows.push(...flattenMetrics(entry, `${label}[${index + 1}]`));
+        } else {
+          rows.push({ path: `${label}[${index + 1}]`, key, value: entry });
+        }
+      });
     } else {
-      rows.push([label, Array.isArray(item) ? item.join(", ") : item]);
+      rows.push({ path: label, key, value: item });
     }
   });
   return rows;
@@ -1871,16 +2078,23 @@ function metricTable(value) {
   if (!rows.length) return '<p class="inspector-note">Няма налични стойности.</p>';
   return `<table class="metric-table">${rows
     .map(
-      ([key, item]) =>
-        `<tr><td>${escapeHtml(key.replaceAll("_", " "))}</td><td>${escapeHtml(
-          valueOrDash(item),
-        )}</td></tr>`,
+      (row) =>
+        `<tr><td><span>${escapeHtml(friendlyMetricLabel(row.key))}</span><small>${escapeHtml(
+          row.path,
+        )}</small></td><td>${escapeHtml(formatMetricValue(row.key, row.value))}</td></tr>`,
     )
     .join("")}</table>`;
 }
 
 function neighborValue(value, camelCase, snakeCase) {
   return value?.[camelCase] ?? value?.[snakeCase];
+}
+
+function packetHops(packet) {
+  const hopStart = packetValue(packet, "hopStart", "hop_start");
+  const hopLimit = packetValue(packet, "hopLimit", "hop_limit");
+  if (!Number.isInteger(hopStart) || !Number.isInteger(hopLimit)) return null;
+  return Math.max(0, hopStart - hopLimit);
 }
 
 function nodeIdFromNumber(value) {
@@ -1923,10 +2137,18 @@ function neighborInfoHtml(info, event) {
   const reportNode = neighborNodeLabel(reportNodeNumber);
   const senderNode = neighborNodeLabel(senderNodeNumber);
   const neighbors = Array.isArray(info.neighbors) ? info.neighbors : [];
-  const senderExplanation =
-    Number(reportNodeNumber) === Number(senderNodeNumber)
-      ? "директен отчет от първоизточника"
-      : "отчетът е препратен от друг възел";
+  const packet = event.packet || {};
+  const responseSnr = packetValue(packet, "rxSnr", "rx_snr");
+  const responseRssi = packetValue(packet, "rxRssi", "rx_rssi");
+  const responseHops = packetHops(packet);
+  const hasLastRx = neighbors.some(
+    (neighbor) => neighborValue(neighbor, "lastRxTime", "last_rx_time") != null,
+  );
+  const hasNeighborInterval = neighbors.some(
+    (neighbor) =>
+      neighborValue(neighbor, "nodeBroadcastIntervalSecs", "node_broadcast_interval_secs") !=
+      null,
+  );
 
   const rows = neighbors.length
     ? neighbors
@@ -1950,13 +2172,21 @@ function neighborInfoHtml(info, event) {
               <td><strong>${escapeHtml(node.name)}</strong><small>${escapeHtml(
                 node.id,
               )} · ${escapeHtml(nodeNumber)}</small></td>
-              <td>${escapeHtml(snr == null ? "—" : `${Number(snr).toFixed(2)} dB`)}</td>
-              <td>${escapeHtml(lastRxLabel)}</td>
-              <td>${escapeHtml(formatNeighborInterval(neighborInterval))}</td>
+              <td>${escapeHtml(
+                snr == null ? "—*" : `${Number(snr).toFixed(2)} dB`,
+              )}</td>
+              ${hasLastRx ? `<td>${escapeHtml(lastRxLabel)}</td>` : ""}
+              ${
+                hasNeighborInterval
+                  ? `<td>${escapeHtml(formatNeighborInterval(neighborInterval))}</td>`
+                  : ""
+              }
             </tr>`;
         })
         .join("")
-    : '<tr><td colspan="4">Възелът не е върнал записани съседи.</td></tr>';
+    : `<tr><td colspan="${2 + Number(hasLastRx) + Number(
+        hasNeighborInterval,
+      )}">Възелът не е върнал записани съседи.</td></tr>`;
 
   return `
     <div class="neighbor-summary">
@@ -1965,10 +2195,10 @@ function neighborInfoHtml(info, event) {
       )}</strong><small>${escapeHtml(reportNode.id)} · ${escapeHtml(
         reportNodeNumber,
       )}</small></div>
-      <div class="inspector-value"><span>Последно изпратен от</span><strong>${escapeHtml(
+      <div class="inspector-value"><span>Последен LoRa relay marker</span><strong>${escapeHtml(
         senderNode.name,
       )}</strong><small>${escapeHtml(senderNode.id)} · ${escapeHtml(
-        senderExplanation,
+        senderNodeNumber,
       )}</small></div>
       <div class="inspector-value"><span>Broadcast interval</span><strong>${escapeHtml(
         formatNeighborInterval(interval),
@@ -1976,15 +2206,25 @@ function neighborInfoHtml(info, event) {
       <div class="inspector-value"><span>Върнати съседи</span><strong>${escapeHtml(
         neighbors.length,
       )}</strong></div>
+      <div class="inspector-value"><span>Линк на отговора</span><strong>${escapeHtml(
+        responseSnr == null ? "SNR —" : `${Number(responseSnr).toFixed(2)} dB SNR`,
+      )}</strong><small>${escapeHtml(
+        responseRssi == null ? "RSSI —" : `${responseRssi} dBm RSSI`,
+      )} · ${escapeHtml(responseHops == null ? "неизвестен маршрут" : `${responseHops} hops`)}</small></div>
     </div>
     <div class="neighbor-table-wrap">
       <table class="neighbor-table">
-        <thead><tr><th>Съсед</th><th>SNR</th><th>Последно приет</th><th>Интервал</th></tr></thead>
+        <thead><tr><th>Съсед</th><th>Последно чут SNR</th>
+          ${hasLastRx ? "<th>Последно приет</th>" : ""}
+          ${hasNeighborInterval ? "<th>Интервал</th>" : ""}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
     <p class="inspector-note">Това са директно чуваните съседи според отчитащия
-      възел, а не непременно всички възли по маршрут до него.</p>
+      възел, а не непременно всички възли по маршрут до него. Firmware не изпраща
+      last-rx време и individual interval през LoRa. <code>lastSentById</code> е relay marker
+      за topology bookkeeping, не авторът на отчета. *Липсващият SNR не е
+      измерена нула; protobuf би го представил с default 0, затова тук остава „—“.</p>
     <details class="raw-details">
       <summary>Raw Neighbor Info packet</summary>
       <pre>${escapeHtml(JSON.stringify(event.packet || info, null, 2))}</pre>
@@ -1996,8 +2236,12 @@ function routeHtml(route) {
   return `<div class="route-path">${route
     .map((hop) => {
       const node = nodeForId(hop.id);
-      return `<span class="route-node" title="${escapeHtml(hop.id)}">
-        ${escapeHtml(node?.short_name || hop.id.slice(-4))}
+      const shortName = node?.short_name || hop.id.slice(-4);
+      const longName = node?.long_name || "Непознат възел";
+      return `<span class="route-node" title="${escapeHtml(`${longName} · ${hop.id}`)}">
+        <span class="route-node-copy"><strong>${escapeHtml(shortName)}</strong><small>${escapeHtml(
+          hop.id,
+        )}</small></span>
         ${hop.snr == null ? "" : `<small>${escapeHtml(hop.snr)} dB</small>`}
       </span>`;
     })
@@ -2127,6 +2371,27 @@ function operationResultHtml(event) {
     </div>
     ${body}
   </article>`;
+}
+
+function safeOperationResultHtml(event) {
+  try {
+    return operationResultHtml(event);
+  } catch (error) {
+    console.error("MeshDesk could not render an operation result", event, error);
+    return `<article class="operation-card failed">
+      <div class="operation-heading">
+        <strong>${escapeHtml(operationLabel(event))}</strong>
+        <time>${escapeHtml(messageTime(event.time))}</time>
+      </div>
+      <p>Резултатът е запазен, но не може да бъде визуализиран: ${escapeHtml(
+        error?.message || "непозната грешка",
+      )}</p>
+      <details class="raw-details">
+        <summary>Raw operation event</summary>
+        <pre>${escapeHtml(JSON.stringify(event, null, 2))}</pre>
+      </details>
+    </article>`;
+  }
 }
 
 function showInspector() {
@@ -2349,7 +2614,7 @@ function renderNodeInspector(node) {
       <div class="inspector-section-title"><h3>Последни заявки</h3></div>
       ${
         operations.length
-          ? operations.map(operationResultHtml).join("")
+          ? operations.map(safeOperationResultHtml).join("")
           : '<p class="inspector-note">Все още няма diagnostic заявки към този възел.</p>'
       }
     </section>
@@ -2548,11 +2813,24 @@ function openMessageInspector(eventId) {
 
 function renderInspector() {
   if (!state.inspector) return;
-  if (state.inspector.type === "node") {
-    const node = nodeForId(state.inspector.nodeId);
-    if (node) renderNodeInspector(node);
-  } else {
-    openMessageInspector(state.inspector.eventId);
+  try {
+    if (state.inspector.type === "node") {
+      const node = nodeForId(state.inspector.nodeId);
+      if (node) renderNodeInspector(node);
+    } else {
+      openMessageInspector(state.inspector.eventId);
+    }
+  } catch (error) {
+    console.error("MeshDesk could not render Node Inspector", state.inspector, error);
+    $("#inspectorEyebrow").textContent = "INSPECTOR ERROR";
+    $("#inspectorTitle").textContent = "Резултатът не може да бъде показан";
+    $("#inspectorSubtitle").textContent = "Основният интерфейс продължава да работи";
+    $("#inspectorContent").innerHTML = `
+      <section class="inspector-section">
+        <p class="inspector-note">${escapeHtml(
+          error?.message || "Непозната грешка при визуализацията",
+        )}</p>
+      </section>`;
   }
 }
 
@@ -3298,10 +3576,44 @@ function fieldControl(sectionName, field) {
   const common = `id="${id}" name="${field.name}" data-type="${field.type}" ${
     field.repeated ? 'data-repeated="true"' : ""
   } ${field.read_only ? "disabled" : ""}`;
+  const metadata = field.metadata || {};
+  const compactMetadata = [];
+  if (metadata.minimum != null || metadata.maximum != null) {
+    compactMetadata.push(
+      `${metadata.minimum ?? "−∞"} – ${metadata.maximum ?? "+∞"}${
+        metadata.unit ? ` ${metadata.unit}` : ""
+      }`,
+    );
+  } else if (metadata.unit) {
+    compactMetadata.push(metadata.unit);
+  }
+  if (metadata.default != null) compactMetadata.push(`default: ${metadata.default}`);
+  const metadataHint = compactMetadata.length
+    ? `<small class="config-field-meta"><span>${escapeHtml(
+        compactMetadata.join(" · "),
+      )}</span></small>`
+    : "";
   if (field.type === "bool") {
     return `<label class="config-toggle"><input type="checkbox" ${common} ${
       field.value ? "checked" : ""
-    }><span>${label}</span></label>`;
+    }><span>${label}${metadataHint}</span></label>`;
+  }
+  if (field.metadata?.choices?.length) {
+    const choices = [...field.metadata.choices];
+    if (!choices.some((choice) => String(choice.value) === String(field.value))) {
+      choices.unshift({
+        value: field.value,
+        label: `${field.value} · Непозната стойност от по-нов firmware (запази)`,
+      });
+    }
+    return `<label><span class="config-field-label">${label}</span><select ${common}>${choices
+      .map(
+        (choice) =>
+          `<option value="${escapeHtml(choice.value)}" ${
+            String(choice.value) === String(field.value) ? "selected" : ""
+          }>${escapeHtml(choice.label)}</option>`,
+      )
+      .join("")}</select>${metadataHint}</label>`;
   }
   if (field.type === "enum") {
     return `<label><span class="config-field-label">${label}</span><select ${common}>${field.enum_values
@@ -3311,7 +3623,7 @@ function fieldControl(sectionName, field) {
             value === field.value ? "selected" : ""
           }>${escapeHtml(value)}</option>`,
       )
-      .join("")}</select></label>`;
+      .join("")}</select>${metadataHint}</label>`;
   }
   const inputType = field.secret ? "password" : field.type === "string" ? "text" : "number";
   const value = field.repeated
@@ -3320,9 +3632,16 @@ function fieldControl(sectionName, field) {
       ? ""
       : field.value ?? "";
   const step = field.type === "float" ? 'step="any"' : "";
+  const minimum = field.metadata?.minimum;
+  const maximum = field.metadata?.maximum;
+  const rangeAttributes = `${minimum != null ? `min="${escapeHtml(minimum)}"` : ""} ${
+    maximum != null ? `max="${escapeHtml(maximum)}"` : ""
+  }`;
   const placeholder = field.secret ? 'placeholder="Остави празно, за да не се променя"' : "";
   return `<label><span class="config-field-label">${label}</span>
-    <input type="${inputType}" ${common} value="${escapeHtml(value)}" ${step} ${placeholder}></label>`;
+    <input type="${inputType}" ${common} value="${escapeHtml(
+      value,
+    )}" ${step} ${rangeAttributes} ${placeholder}>${metadataHint}</label>`;
 }
 
 function selectConfigSection(name) {

@@ -36,20 +36,14 @@ class FakeLocalNode:
         pass
 
     def _respond_to_admin(self):
-        response = (
-            self.admin_responses.pop(0)
-            if self.admin_responses
-            else self.admin_response
-        )
+        response = self.admin_responses.pop(0) if self.admin_responses else self.admin_response
         if response is not None:
             self.ack_callback_names.append(self.onAckNak.__name__)
             self.onAckNak(response)
 
     def ensureSessionKey(self):
         self.session_refreshes += 1
-        self.iface._getOrCreateByNum(to_node_num(self.nodeNum))[
-            "adminSessionPassKey"
-        ] = b"fresh"
+        self.iface._getOrCreateByNum(to_node_num(self.nodeNum))["adminSessionPassKey"] = b"fresh"
 
     def writeConfig(self, section):
         self.written.append(section)
@@ -128,9 +122,7 @@ class FakeInterface:
         self.sent_data = []
         self.remote_node = FakeLocalNode()
         self.remote_node.iface = self
-        self._node_records_by_num = {
-            self.remote_node.nodeNum: {"adminSessionPassKey": b"stale"}
-        }
+        self._node_records_by_num = {self.remote_node.nodeNum: {"adminSessionPassKey": b"stale"}}
         self.get_node_requests = []
         self.ack_waits = 0
         self.ack_wait_error = None
@@ -194,9 +186,7 @@ def test_send_text_records_packet_and_event():
     assert kwargs["channelIndex"] == 2
     assert kwargs["wantAck"] is True
     assert manager.events()[0]["want_ack"] is True
-    kwargs["onResponse"](
-        {"decoded": {"requestId": 42, "routing": {"errorReason": "NONE"}}}
-    )
+    kwargs["onResponse"]({"decoded": {"requestId": 42, "routing": {"errorReason": "NONE"}}})
     assert manager.events()[0]["kind"] == "outgoing"
     assert manager.events()[1]["kind"] == "delivery"
 
@@ -227,9 +217,7 @@ def test_queued_message_exposes_radio_wait_then_enroute_status():
             break
         time.sleep(0.01)
 
-    status_event = next(
-        event for event in manager.events() if event["kind"] == "message_status"
-    )
+    status_event = next(event for event in manager.events() if event["kind"] == "message_status")
     assert status_event["status"] == "enroute"
     assert status_event["packet_id"] == 43
 
@@ -692,6 +680,48 @@ def test_config_schema_hides_secret_and_updates_section():
     assert interface.localNode.localConfig.bluetooth.enabled is False
     assert interface.localNode.localConfig.bluetooth.fixed_pin == 123456
     assert interface.localNode.written == ["bluetooth"]
+
+
+def test_every_config_field_has_type_default_domain_and_recommendation_metadata():
+    manager, _ = connected_manager()
+    sections = manager.config()["sections"]
+
+    for section in sections:
+        for field in section["fields"]:
+            metadata = field["metadata"]
+            assert metadata["protocol_type"], f"missing type for {section['name']}.{field['name']}"
+            assert (
+                metadata.get("default") is not None or metadata.get("protocol_default") is not None
+            )
+            assert metadata["domain"], f"missing domain for {section['name']}.{field['name']}"
+            assert metadata["recommended"], (
+                f"missing recommendation for {section['name']}.{field['name']}"
+            )
+
+
+def test_config_metadata_exposes_firmware_limits_and_friendly_protocol_choices():
+    manager, _ = connected_manager()
+    sections = manager.config()["sections"]
+    neighbor = next(item for item in sections if item["name"] == "neighbor_info")
+    interval = next(item for item in neighbor["fields"] if item["name"] == "update_interval")
+    assert interval["metadata"]["minimum"] == 14400
+    assert interval["metadata"]["default"] == "21600 s · 6 часа"
+
+    network = next(item for item in sections if item["name"] == "network")
+    protocols = next(item for item in network["fields"] if item["name"] == "enabled_protocols")
+    assert protocols["label"] == "Допълнително IP излъчване"
+    assert [item["value"] for item in protocols["metadata"]["choices"]] == [0, 1]
+
+
+def test_neighbor_interval_below_firmware_minimum_is_rejected():
+    manager, _ = connected_manager()
+
+    try:
+        manager.update_config("neighbor_info", {"update_interval": 3600})
+    except ValueError as exc:
+        assert "at least 14400" in str(exc)
+    else:
+        raise AssertionError("Expected Neighbor Info firmware range validation")
 
 
 def test_safe_config_export_and_import_omit_secrets():

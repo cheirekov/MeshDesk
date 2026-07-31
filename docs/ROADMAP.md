@@ -76,7 +76,8 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 - [x] Global traceroute и per-node Neighbor Info cooldown с backend enforcement.
 - [ ] Time-series база за telemetry и position.
 - [ ] Графики и CSV export.
-- [ ] Neighbor Info ingestion.
+- [x] Friendly Neighbor Info result с resolved node names, SNR и link metadata.
+- [ ] Дългосрочно Neighbor Info ingestion/time-series.
 - [ ] Mesh topology graph с direction, SNR и last-heard.
 - [ ] Nodes-per-hop и congestion/local-stats dashboards.
 - [ ] Базова OpenStreetMap карта и waypoints.

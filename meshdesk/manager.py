@@ -25,6 +25,7 @@ from meshtastic.protobuf import (
 from meshtastic.util import fromPSK, pskToString, to_node_num
 from pubsub import pub
 
+from meshdesk.config_metadata import config_field_metadata
 from meshdesk.history import EncryptedHistory
 from meshdesk.pairing import BluetoothPairer
 
@@ -1590,6 +1591,7 @@ class MeshtasticManager:
                     "repeated": False,
                     "secret": False,
                     "read_only": False,
+                    "metadata": config_field_metadata(OWNER_SECTION, name),
                 }
                 for name, label, field_type in definitions
             ],
@@ -1627,10 +1629,14 @@ class MeshtasticManager:
                     )
                 elif secret:
                     value = ""
+                metadata = config_field_metadata(section, descriptor.name, descriptor)
                 fields.append(
                     {
                         "name": descriptor.name,
-                        "label": descriptor.name.replace("_", " ").title(),
+                        "label": metadata.get(
+                            "label",
+                            descriptor.name.replace("_", " ").title(),
+                        ),
                         "type": (
                             "enum"
                             if descriptor.enum_type is not None
@@ -1658,6 +1664,7 @@ class MeshtasticManager:
                         "repeated": descriptor.is_repeated,
                         "secret": secret,
                         "read_only": is_bytes,
+                        "metadata": metadata,
                     }
                 )
             if fields:
@@ -1741,6 +1748,18 @@ class MeshtasticManager:
                 continue
             if field.is_repeated and isinstance(value, str):
                 value = [part.strip() for part in value.split(",") if part.strip()]
+            metadata = config_field_metadata(section, name)
+            if metadata.get("enforce_range") and value is not None:
+                minimum = metadata.get("minimum")
+                maximum = metadata.get("maximum")
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{name} must be numeric") from exc
+                if minimum is not None and numeric_value < minimum:
+                    raise ValueError(f"{name} must be at least {minimum}")
+                if maximum is not None and numeric_value > maximum:
+                    raise ValueError(f"{name} must be at most {maximum}")
             patch[name] = value
 
         candidate = type(target)()

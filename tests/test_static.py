@@ -94,8 +94,17 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert "Custom PSK и потвърждението не съвпадат" in script.text
     assert "olderThanDay" in script.text
     assert "neighborInfoHtml" in script.text
-    assert "директен отчет от първоизточника" in script.text
+    assert "function packetHops(packet)" in script.text
+    assert "safeOperationResultHtml" in script.text
+    assert "MeshDesk could not render Node Inspector" in script.text
+    assert "LoRa relay marker" in script.text
     assert "Raw Neighbor Info packet" in script.text
+    assert "Protocol default:" in script.text
+    assert "Firmware default:" in script.text
+    assert "Непозната стойност от по-нов firmware (запази)" in script.text
+    assert 'snr == null ? "—*"' in script.text
+    assert "route-node-copy" in script.text
+    assert "hundredth" in script.text
 
 
 def test_contextual_help_covers_dynamic_config_and_admin_controls() -> None:

@@ -99,12 +99,17 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 | ID | Приоритет | Функция | Зависимости | Статус |
 |---|---|---|---|---|
 | CFG-01 | P1 | Contextual configuration help | guidance registry | **completed** |
-| CFG-02 | P1 | Specialized forms, units и validation | schema metadata | queued |
+| CFG-02 | P1 | Specialized forms, units и validation | schema metadata | **started** — общ descriptor metadata + curated firmware limits/units |
 | CFG-03 | P1 | Firmware/capability-aware visibility | NODE-08 | queued |
 | CFG-04 | P2 | Region/preset compatibility advisor | capability + regulatory data | queued |
 | CFG-05 | P2 | Encrypted security key backup/restore | explicit threat model | queued |
 | CFG-06 | P2 | Protection level и identity-change warnings | firmware capability | queued |
 | CFG-07 | P2 | Config bundle diff/signature/version | professional operation plan | queued |
+
+Security key mutation остава умишлено извън общата dynamic форма. Публичните
+identity данни са read-only, а encrypted backup/restore и identity rotation ще
+се добавят след threat model, explicit confirmations и recovery workflow
+(CFG-05/CFG-06).
 
 ## Professional/fleet track
 
