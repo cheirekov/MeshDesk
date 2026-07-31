@@ -97,6 +97,7 @@ DEFAULT_HISTORY_WINDOW_MINUTES = 60 * 24
 DEFAULT_HISTORY_MAX_MESSAGES = 100
 DEFAULT_RECONNECT_DELAYS_SECONDS = (5.0, 10.0, 20.0, 40.0, 60.0)
 DEFAULT_RECONNECT_STABLE_SECONDS = 10.0
+DEFAULT_BLE_HEALTH_POLL_SECONDS = 2.0
 RECONNECT_ELIGIBLE_REASONS = {
     "connection_lost",
     "timeout",
@@ -165,6 +166,7 @@ class MeshtasticManager:
         history_directory: Path | str = "logs",
         reconnect_delays: tuple[float, ...] = DEFAULT_RECONNECT_DELAYS_SECONDS,
         reconnect_stable_seconds: float = DEFAULT_RECONNECT_STABLE_SECONDS,
+        ble_health_poll_seconds: float = DEFAULT_BLE_HEALTH_POLL_SECONDS,
     ) -> None:
         self._lock = threading.RLock()
         self._command_lock = threading.Lock()
@@ -202,8 +204,11 @@ class MeshtasticManager:
             raise ValueError("Reconnect delays must contain non-negative seconds")
         if reconnect_stable_seconds < 0:
             raise ValueError("Reconnect stable period cannot be negative")
+        if ble_health_poll_seconds <= 0:
+            raise ValueError("BLE health poll period must be positive")
         self._reconnect_delays = tuple(float(delay) for delay in reconnect_delays)
         self._reconnect_stable_seconds = float(reconnect_stable_seconds)
+        self._ble_health_poll_seconds = float(ble_health_poll_seconds)
         self._events: deque[dict[str, Any]] = deque(maxlen=event_limit)
         self._sequence = 0
         self._profile_id: str | None = None
@@ -475,6 +480,8 @@ class MeshtasticManager:
             if stale:
                 interface.close()
                 return
+            if transport == "ble":
+                self._start_ble_transport_monitor(generation, interface)
             self._schedule_stability_reset(generation, interface)
             self._add_event("status", message="Connected and node database loaded")
             for pending_packet in pending_packets:
@@ -553,6 +560,79 @@ class MeshtasticManager:
             self._reconnect_attempt = 0
             self._reconnect_stability_timer = None
         self._add_event("status", message="Reconnect session is stable; backoff reset")
+
+    def _start_ble_transport_monitor(self, generation: int, interface: Any) -> None:
+        """Observe BlueZ state without using mesh traffic as a liveness signal.
+
+        Meshtastic-python 2.7.x closes BLE synchronously from Bleak's asyncio
+        disconnect callback.  On BlueZ that callback can stall before publishing
+        ``meshtastic.connection.lost``.  Replace it with a non-blocking handoff and
+        retain a small polling fallback for backend/version differences.
+        """
+        client = getattr(interface, "client", None)
+        bleak_client = getattr(client, "bleak_client", None)
+        backend = getattr(bleak_client, "_backend", None)
+        set_callback = getattr(backend, "set_disconnected_callback", None)
+        if callable(set_callback):
+            with contextlib.suppress(Exception):
+                set_callback(
+                    lambda: self._queue_detected_connection_loss(generation, interface)
+                )
+
+        threading.Thread(
+            target=self._ble_transport_watchdog,
+            args=(generation, interface),
+            name="meshdesk-ble-health",
+            daemon=True,
+        ).start()
+
+    def _queue_detected_connection_loss(
+        self,
+        generation: int,
+        interface: Any,
+    ) -> None:
+        """Leave the Bleak asyncio callback immediately; cleanup may block."""
+        threading.Thread(
+            target=self._handle_detected_connection_loss,
+            args=(generation, interface),
+            name="meshdesk-ble-disconnect",
+            daemon=True,
+        ).start()
+
+    def _handle_detected_connection_loss(
+        self,
+        generation: int,
+        interface: Any,
+    ) -> None:
+        with self._lock:
+            if generation != self._generation or interface is not self._interface:
+                return
+        self._on_connection_lost(interface)
+
+    @staticmethod
+    def _ble_transport_connected(interface: Any) -> bool | None:
+        client = getattr(interface, "client", None)
+        bleak_client = getattr(client, "bleak_client", None)
+        if bleak_client is None:
+            return None
+        try:
+            return bool(bleak_client.is_connected)
+        except Exception:
+            return None
+
+    def _ble_transport_watchdog(self, generation: int, interface: Any) -> None:
+        while True:
+            time.sleep(self._ble_health_poll_seconds)
+            with self._lock:
+                if (
+                    generation != self._generation
+                    or interface is not self._interface
+                    or self._state != "connected"
+                ):
+                    return
+            if self._ble_transport_connected(interface) is False:
+                self._handle_detected_connection_loss(generation, interface)
+                return
 
     def _schedule_reconnect(self, generation: int, reason: str | None) -> bool:
         with self._lock:
@@ -2762,6 +2842,19 @@ class MeshtasticManager:
         self._cancel_outbound_messages()
         self._add_event("error", message=self._error)
         self._schedule_reconnect(generation, "connection_lost")
+        threading.Thread(
+            target=self._close_lost_interface,
+            args=(interface,),
+            name="meshdesk-lost-interface-close",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _close_lost_interface(interface: Any) -> None:
+        try:
+            interface.close()
+        except Exception:
+            logger.exception("Error while releasing lost Meshtastic interface")
 
     def wait_until_settled(self, timeout: float = 10.0) -> str:
         """Small helper used by integration tests and diagnostics."""

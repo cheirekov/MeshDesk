@@ -397,6 +397,66 @@ def test_stable_reconnect_resets_the_backoff_counter():
     manager.disconnect()
 
 
+def test_ble_disconnect_callback_hands_loss_to_manager_without_blocking():
+    class FakeBleakBackend:
+        callback = None
+
+        def set_disconnected_callback(self, callback):
+            self.callback = callback
+
+    class FakeBleakClient:
+        def __init__(self):
+            self._backend = FakeBleakBackend()
+            self.is_connected = True
+
+    manager = MeshtasticManager(ble_health_poll_seconds=60)
+    interface = FakeInterface()
+    interface.client = type("Client", (), {"bleak_client": FakeBleakClient()})()
+    manager._interface = interface  # noqa: SLF001
+    manager._state = "connected"  # noqa: SLF001
+    manager._transport = "ble"  # noqa: SLF001
+    manager._target = "AA:BB:CC:DD:EE:FF"  # noqa: SLF001
+
+    manager._start_ble_transport_monitor(  # noqa: SLF001
+        manager._generation,  # noqa: SLF001
+        interface,
+    )
+    callback = interface.client.bleak_client._backend.callback
+    assert callback is not None
+
+    callback()
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and manager.status()["state"] == "connected":
+        time.sleep(0.01)
+
+    assert manager.status()["health"]["reason"] == "connection_lost"
+
+
+def test_ble_watchdog_detects_disconnect_when_library_callback_is_missing():
+    class FakeBleakClient:
+        is_connected = False
+        _backend = object()
+
+    manager = MeshtasticManager(ble_health_poll_seconds=0.01)
+    interface = FakeInterface()
+    interface.client = type("Client", (), {"bleak_client": FakeBleakClient()})()
+    manager._interface = interface  # noqa: SLF001
+    manager._state = "connected"  # noqa: SLF001
+    manager._transport = "ble"  # noqa: SLF001
+    manager._target = "AA:BB:CC:DD:EE:FF"  # noqa: SLF001
+
+    manager._start_ble_transport_monitor(  # noqa: SLF001
+        manager._generation,  # noqa: SLF001
+        interface,
+    )
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and manager.status()["state"] == "connected":
+        time.sleep(0.01)
+
+    assert manager.status()["health"]["state"] == "lost"
+    assert manager.status()["health"]["reason"] == "connection_lost"
+
+
 def test_message_history_is_scoped_to_active_radio_profile(tmp_path):
     history = EncryptedHistory(tmp_path / "logs", key=b"h" * 32)
     manager = MeshtasticManager(history=history)

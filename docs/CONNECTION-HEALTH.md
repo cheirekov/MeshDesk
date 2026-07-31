@@ -43,6 +43,12 @@ Backoff-ът е ограничен до `5 → 10 → 20 → 40 → 60 s` и н�
 избягва агресивни BLE/GATT цикли, но позволява power-save устройство да бъде
 намерено, когато отново започне да рекламира.
 
+При BLE MeshDesk регистрира неблокиращ BlueZ/Bleak disconnect handler и
+проверява локалното transport състояние през 2 секунди. Watchdog-ът не използва
+липсата на mesh съобщения като сигнал и не изпраща heartbeat/LoRa пакети. Така
+reboot или power-save disconnect се отразява като `lost`, дори когато
+`meshtastic-python` не публикува своя `connection.lost` event.
+
 ## Timestamps
 
 Health payload съдържа:
