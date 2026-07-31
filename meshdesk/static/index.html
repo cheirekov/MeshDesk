@@ -594,6 +594,14 @@
           <input id="connectionProfileName" maxlength="80" autocomplete="off"
             placeholder="Например Домашна база">
         </label>
+        <label class="checkbox profile-reconnect-option">
+          <input id="connectionProfileAutoReconnect" type="checkbox">
+          <span>
+            Автоматично повторно свързване
+            <small>Само при временна transport грешка. Ръчното „Прекъсни“,
+              pairing проблем или различен node ID винаги спират опитите.</small>
+          </span>
+        </label>
         <div class="modal-actions">
           <button id="cancelConnectionProfile" type="button" class="ghost">Откажи</button>
           <button id="confirmConnectionProfile" type="button" class="primary">Запази</button>
@@ -653,6 +661,6 @@
 
     <div id="toast" role="status" aria-live="polite"></div>
     <div id="helpTooltip" class="help-tooltip hidden" role="tooltip"></div>
-    <script src="/app.js?v=20260731-inspector-fix1"></script>
+    <script src="/app.js?v=20260731-reconnect1"></script>
   </body>
 </html>

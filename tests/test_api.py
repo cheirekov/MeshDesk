@@ -14,11 +14,26 @@ class StubManager:
     def status(self):
         return {"state": "disconnected", "event_sequence": 0}
 
-    def connect_tcp(self, host, port):
-        self.calls.append(("tcp", host, port))
+    def connect_tcp(
+        self,
+        host,
+        port,
+        *,
+        auto_reconnect=False,
+        expected_device_id=None,
+    ):
+        self.calls.append(
+            ("tcp", host, port, auto_reconnect, expected_device_id)
+        )
 
-    def connect_ble(self, address):
-        self.calls.append(("ble", address))
+    def connect_ble(
+        self,
+        address,
+        *,
+        auto_reconnect=False,
+        expected_device_id=None,
+    ):
+        self.calls.append(("ble", address, auto_reconnect, expected_device_id))
 
     def disconnect(self):
         self.calls.append(("disconnect",))
@@ -164,7 +179,7 @@ def test_tcp_connection_endpoint():
             json={"transport": "tcp", "host": "172.16.19.176", "port": 4403},
         )
     assert response.status_code == 202
-    assert manager.calls[0] == ("tcp", "172.16.19.176", 4403)
+    assert manager.calls[0] == ("tcp", "172.16.19.176", 4403, False, None)
 
 
 def test_tcp_mdns_discovery_endpoint():
@@ -189,6 +204,7 @@ def test_connection_profile_crud_and_usage(tmp_path):
                 "transport": "tcp",
                 "host": "172.16.19.176",
                 "port": 4403,
+                "auto_reconnect": True,
             },
         )
         profile = created.json()["profile"]
@@ -207,6 +223,7 @@ def test_connection_profile_crud_and_usage(tmp_path):
     assert created.status_code == 201
     assert listing.json()["profiles"][0]["name"] == "Домашна база"
     assert connected.status_code == 202
+    assert manager.calls[0] == ("tcp", "172.16.19.176", 4403, True, None)
     assert store.path.exists()
     assert deleted.status_code == 204
     assert store.list() == []
@@ -236,7 +253,10 @@ def test_saved_profile_cannot_be_attributed_to_another_endpoint(tmp_path):
         )
 
     assert response.status_code == 409
-    assert ("tcp", "another-host.local", 4403) not in manager.calls
+    assert not any(
+        call[:3] == ("tcp", "another-host.local", 4403)
+        for call in manager.calls
+    )
 
 
 def test_connection_profile_identity_verification_and_rebind(tmp_path):
@@ -266,6 +286,15 @@ def test_connection_profile_identity_verification_and_rebind(tmp_path):
             f"/api/connection-profiles/{profile['id']}/verify",
             json={"allow_rebind": True},
         )
+        connected = client.post(
+            "/api/connect",
+            json={
+                "transport": "tcp",
+                "host": "172.16.19.176",
+                "port": 4403,
+                "connection_profile_id": profile["id"],
+            },
+        )
 
     assert verified.status_code == 200
     assert verified.json()["profile"]["device_id"] == "!1234abcd"
@@ -274,6 +303,14 @@ def test_connection_profile_identity_verification_and_rebind(tmp_path):
     assert mismatch.json()["detail"]["expected_id"] == "!1234abcd"
     assert mismatch.json()["detail"]["observed_id"] == "!87654321"
     assert rebound.json()["profile"]["device_id"] == "!87654321"
+    assert connected.status_code == 202
+    assert (
+        "tcp",
+        "172.16.19.176",
+        4403,
+        False,
+        "!87654321",
+    ) in manager.calls
 
 
 def test_send_message_endpoint():

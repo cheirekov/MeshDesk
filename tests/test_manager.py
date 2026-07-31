@@ -15,7 +15,11 @@ from meshtastic.protobuf import (
 from meshtastic.util import to_node_num
 
 from meshdesk.history import EncryptedHistory
-from meshdesk.manager import MeshtasticManager, RequestCooldownError
+from meshdesk.manager import (
+    DeviceIdentityMismatchError,
+    MeshtasticManager,
+    RequestCooldownError,
+)
 
 
 class FakeLocalNode:
@@ -297,6 +301,100 @@ def test_connection_errors_are_classified_for_reconnect_policy():
         )
         == "pairing_required"
     )
+    assert (
+        MeshtasticManager._classify_connection_error(  # noqa: SLF001
+            DeviceIdentityMismatchError("!12345678", "!87654321"),
+            "ble",
+        )
+        == "identity_mismatch"
+    )
+
+
+def test_auto_reconnect_waits_with_backoff_and_manual_disconnect_stops_it():
+    manager = MeshtasticManager(reconnect_delays=(60,))
+    interface = FakeInterface()
+    manager._interface = interface  # noqa: SLF001
+    manager._state = "connected"  # noqa: SLF001
+    manager._transport = "ble"  # noqa: SLF001
+    manager._target = "AA:BB:CC:DD:EE:FF"  # noqa: SLF001
+    manager._auto_reconnect = True  # noqa: SLF001
+    manager._reconnect_transport = "ble"  # noqa: SLF001
+    manager._reconnect_target = "AA:BB:CC:DD:EE:FF"  # noqa: SLF001
+    manager._reconnect_params = {"address": "AA:BB:CC:DD:EE:FF"}  # noqa: SLF001
+
+    manager._on_connection_lost(interface)  # noqa: SLF001
+    waiting = manager.status()
+    assert waiting["health"]["state"] == "lost"
+    assert waiting["health"]["reconnect"]["phase"] == "waiting"
+    assert waiting["health"]["reconnect"]["attempt"] == 1
+    assert waiting["health"]["reconnect"]["active"] is True
+
+    manager.disconnect()
+    stopped = manager.status()
+    assert stopped["state"] == "disconnected"
+    assert stopped["health"]["reason"] == "manual"
+    assert stopped["health"]["reconnect"]["phase"] == "disabled"
+
+
+def test_auto_reconnect_timer_starts_a_new_connection_attempt(monkeypatch):
+    manager = MeshtasticManager(reconnect_delays=(0.01,))
+    interface = FakeInterface()
+    attempted = threading.Event()
+    manager._interface = interface  # noqa: SLF001
+    manager._state = "connected"  # noqa: SLF001
+    manager._transport = "tcp"  # noqa: SLF001
+    manager._target = "mesh.local:4403"  # noqa: SLF001
+    manager._auto_reconnect = True  # noqa: SLF001
+    manager._reconnect_transport = "tcp"  # noqa: SLF001
+    manager._reconnect_target = "mesh.local:4403"  # noqa: SLF001
+    manager._reconnect_params = {"host": "mesh.local", "port": 4403}  # noqa: SLF001
+
+    def fake_connect_worker(*_args):
+        attempted.set()
+
+    monkeypatch.setattr(manager, "_connect_worker", fake_connect_worker)
+    manager._on_connection_lost(interface)  # noqa: SLF001
+
+    assert attempted.wait(1)
+    reconnecting = manager.status()
+    assert reconnecting["state"] == "reconnecting"
+    assert reconnecting["health"]["reconnect"]["phase"] == "connecting"
+    manager.disconnect()
+
+
+def test_non_transient_failure_blocks_automatic_reconnect():
+    manager = MeshtasticManager(reconnect_delays=(0.01,))
+    manager._auto_reconnect = True  # noqa: SLF001
+
+    scheduled = manager._schedule_reconnect(  # noqa: SLF001
+        manager._generation,  # noqa: SLF001
+        "pairing_required",
+    )
+
+    assert scheduled is False
+    reconnect = manager.status()["health"]["reconnect"]
+    assert reconnect["phase"] == "blocked"
+    assert reconnect["active"] is False
+    manager.disconnect()
+
+
+def test_stable_reconnect_resets_the_backoff_counter():
+    manager = MeshtasticManager(reconnect_stable_seconds=0)
+    interface = FakeInterface()
+    manager._interface = interface  # noqa: SLF001
+    manager._state = "connected"  # noqa: SLF001
+    manager._auto_reconnect = True  # noqa: SLF001
+    manager._reconnect_attempt = 4  # noqa: SLF001
+
+    manager._mark_reconnect_stable(  # noqa: SLF001
+        manager._generation,  # noqa: SLF001
+        interface,
+    )
+
+    reconnect = manager.status()["health"]["reconnect"]
+    assert reconnect["attempt"] == 0
+    assert reconnect["phase"] == "armed"
+    manager.disconnect()
 
 
 def test_message_history_is_scoped_to_active_radio_profile(tmp_path):

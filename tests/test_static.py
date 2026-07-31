@@ -42,12 +42,15 @@ def test_saved_connection_profiles_are_available_in_connection_panel() -> None:
     assert 'id="rebindConnectionProfile"' in page.text
     assert 'id="connectionHealthPanel"' in page.text
     assert 'id="connectionHealthCompact"' in page.text
+    assert 'id="connectionProfileAutoReconnect"' in page.text
     assert 'id="discoverTcpButton"' in page.text
     assert 'id="tcpDiscoveryResults"' in page.text
     assert 'id="tcpDiscoveryDetails"' in page.text
     assert "refreshConnectionProfiles()" in script.text
     assert "verifySelectedConnectionProfile(status)" in script.text
     assert "updateConnectionHealth(status)" in script.text
+    assert "reconnectActive" in script.text
+    assert "Опит ${reconnect.attempt} след ${remaining} s" in script.text
     assert "Remote състояние: неизвестно" in script.text
     assert 'data-action="favorite">Добави' in script.text
     assert 'data-action="unfavorite">Премахни' in script.text

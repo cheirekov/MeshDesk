@@ -26,6 +26,7 @@ def test_connection_profile_lifecycle_is_persistent(tmp_path):
     assert store.list()[0]["id"] == created["id"]
     assert store.list()[0]["last_used_at"] is None
     assert store.list()[0]["device_id"] is None
+    assert store.list()[0]["auto_reconnect"] is False
 
     updated = store.update(
         created["id"],
@@ -34,9 +35,11 @@ def test_connection_profile_lifecycle_is_persistent(tmp_path):
             "transport": "tcp",
             "host": "mesh.local",
             "port": 4403,
+            "auto_reconnect": True,
         },
     )
     assert updated["name"] == "Основна база"
+    assert updated["auto_reconnect"] is True
     assert updated["created_at"] == created["created_at"]
 
     used = store.mark_used(created["id"])

@@ -1,7 +1,7 @@
 # Connection profiles
 
-Connection profiles са първата реализация от M1. Те намаляват ръчното
-въвеждане, но все още не правят автоматично reconnect.
+Connection profiles са основата на M1 connection lifecycle. Те намаляват
+ръчното въвеждане и са единственият начин да се включи автоматичен reconnect.
 
 ## Какво се пази
 
@@ -10,6 +10,7 @@ Connection profiles са първата реализация от M1. Те на�
 - TCP host и port, или BLE address;
 - време на създаване, промяна и последно използване.
 - потвърден Meshtastic node ID, име и време на последната identity проверка.
+- explicit `auto_reconnect` opt-in.
 
 Не се пазят Bluetooth PIN, channel PSK, Wi-Fi парола, private/admin keys или
 друга radio конфигурация.
@@ -33,12 +34,24 @@ lifecycle, а не към firmware конфигурацията на радио�
   не променя запазената идентичност.
 - „Приеми новото радио“ изисква отделно потвърждение и се използва само при
   умишлена смяна на устройството или identity reset.
+- Auto-reconnect не е включен по подразбиране и се редактира от modal-а на
+  профила.
+- Ръчно въведен endpoint никога не стартира безкраен background retry.
 
-## Следващи зависимости
+## Reconnect policy
 
-Преди auto-reconnect към профила остават:
+При `connection_lost`, timeout, отказан TCP endpoint, липсваща BLE реклама или
+друга временна transport грешка се използва `5, 10, 20, 40, 60 s` backoff.
+След десет секунди стабилна сесия failure counter-ът се нулира. За BLE всеки
+автоматичен опит прави fresh scan и само един GATT/handshake цикъл; следващият
+се управлява от общия backoff.
 
-1. explicit opt-in за auto-reconnect;
-2. bounded exponential backoff и бутон за спиране.
+Loop-ът се блокира при:
 
-Това предотвратява reconnect loop към грешен endpoint или устройство.
+- `pairing_required`;
+- identity mismatch спрямо потвърдения node ID;
+- ръчно **Прекъсни** или endpoint switch.
+
+Докато loop-ът е активен, съществуващият бутон **Прекъсни** остава достъпен.
+Чатовете и последният NodeDB изглед остават видими като локален snapshot, но
+изпращането и конфигурационните действия са disabled до успешен handshake.

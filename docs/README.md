@@ -8,11 +8,11 @@
 - [Implementation roadmap](ROADMAP.md) — подредени етапи и критерии за
   завършеност.
 - [Connection profiles](CONNECTION-PROFILES.md) — локално запазени TCP/BLE
-  endpoints и граници за бъдещия auto-reconnect.
+  endpoints, identity binding и opt-in auto-reconnect.
 - [TCP mDNS discovery](TCP-DISCOVERY.md) — откриване на
   `_meshtastic._tcp.local.` без системни пакети.
 - [Connection health](CONNECTION-HEALTH.md) — lifecycle states, timestamps и
-  допустимост за бъдещ reconnect.
+  reconnect state machine, backoff и liveness.
 - [UI information architecture](UX-STRUCTURE.md) — правила за подреждане на
   основни, вторични и бъдещи fleet секции.
 - [Android/Desktop parity backlog](ANDROID-PARITY-BACKLOG.md) — пълната опашка

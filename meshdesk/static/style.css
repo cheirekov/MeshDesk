@@ -125,8 +125,10 @@ button:disabled { opacity: 0.38; cursor: not-allowed; }
 .status span { width: 8px; height: 8px; border-radius: 50%; background: #61706b; }
 .status.connected { color: var(--green); border-color: #355c2e; background: var(--green-dark); }
 .status.connected span { background: var(--green); box-shadow: 0 0 12px var(--green); }
-.status.connecting { color: var(--amber); }
-.status.connecting span { background: var(--amber); animation: pulse 1s infinite; }
+.status.connecting,
+.status.reconnecting { color: var(--amber); }
+.status.connecting span,
+.status.reconnecting span { background: var(--amber); animation: pulse 1s infinite; }
 .status.error { color: var(--red); border-color: #5e3333; }
 .status.error span { background: var(--red); }
 @keyframes pulse { 50% { opacity: 0.3; } }
@@ -314,7 +316,23 @@ button:disabled { opacity: 0.38; cursor: not-allowed; }
 }
 .connection-health-panel.lost,
 .connection-health-panel.failed { border-color: #6c3939; }
-.connection-health-panel.connecting { border-color: #67552c; }
+.connection-health-panel.connecting,
+.connection-health-panel.reconnecting { border-color: #67552c; }
+.profile-reconnect-option {
+  align-items: flex-start;
+  margin-top: 4px;
+  padding: 10px;
+  border: 1px solid #30463e;
+  border-radius: 9px;
+  background: rgba(12, 31, 25, 0.65);
+}
+.profile-reconnect-option small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.64rem;
+  line-height: 1.45;
+}
 
 label {
   display: flex;

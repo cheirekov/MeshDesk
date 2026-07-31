@@ -33,6 +33,7 @@ class ConnectionProfileRequest(BaseModel):
     host: str = ""
     port: int = Field(default=4403, ge=1, le=65535)
     address: str = ""
+    auto_reconnect: bool = False
 
 
 class ConnectionIdentityRequest(BaseModel):
@@ -280,6 +281,7 @@ def create_app(
     @api.post("/api/connect", status_code=202)
     def connect(request: ConnectRequest) -> dict:
         try:
+            profile = None
             if request.connection_profile_id:
                 profile = profiles.get(request.connection_profile_id)
                 endpoint_matches = (
@@ -302,9 +304,18 @@ def create_app(
                         detail="Connection fields differ from the saved profile",
                     )
             if request.transport == "tcp":
-                radio.connect_tcp(request.host, request.port)
+                radio.connect_tcp(
+                    request.host,
+                    request.port,
+                    auto_reconnect=bool(profile and profile.get("auto_reconnect")),
+                    expected_device_id=profile.get("device_id") if profile else None,
+                )
             else:
-                radio.connect_ble(request.address)
+                radio.connect_ble(
+                    request.address,
+                    auto_reconnect=bool(profile and profile.get("auto_reconnect")),
+                    expected_device_id=profile.get("device_id") if profile else None,
+                )
             if request.connection_profile_id:
                 profiles.mark_used(request.connection_profile_id)
             return radio.status()

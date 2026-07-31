@@ -95,6 +95,15 @@ TRANSPORT_ACTIVITY_EVENT_KINDS = {
 OWNER_SECTION = "owner"
 DEFAULT_HISTORY_WINDOW_MINUTES = 60 * 24
 DEFAULT_HISTORY_MAX_MESSAGES = 100
+DEFAULT_RECONNECT_DELAYS_SECONDS = (5.0, 10.0, 20.0, 40.0, 60.0)
+DEFAULT_RECONNECT_STABLE_SECONDS = 10.0
+RECONNECT_ELIGIBLE_REASONS = {
+    "connection_lost",
+    "timeout",
+    "connection_refused",
+    "device_not_found",
+    "connection_failed",
+}
 
 
 def _now() -> str:
@@ -135,6 +144,17 @@ class RequestCooldownError(RuntimeError):
         )
 
 
+class DeviceIdentityMismatchError(RuntimeError):
+    """Stop automatic reconnect when an endpoint resolves to another radio."""
+
+    def __init__(self, expected_id: str, observed_id: str) -> None:
+        self.expected_id = expected_id
+        self.observed_id = observed_id
+        super().__init__(
+            f"Reconnect expected {expected_id}, but the endpoint returned {observed_id}"
+        )
+
+
 class MeshtasticManager:
     """Own one radio connection and expose a thread-safe UI-facing state."""
 
@@ -143,6 +163,8 @@ class MeshtasticManager:
         event_limit: int = 500,
         history: EncryptedHistory | None = None,
         history_directory: Path | str = "logs",
+        reconnect_delays: tuple[float, ...] = DEFAULT_RECONNECT_DELAYS_SECONDS,
+        reconnect_stable_seconds: float = DEFAULT_RECONNECT_STABLE_SECONDS,
     ) -> None:
         self._lock = threading.RLock()
         self._command_lock = threading.Lock()
@@ -162,6 +184,26 @@ class MeshtasticManager:
         self._last_transport: str | None = None
         self._last_target: str | None = None
         self._last_session_started_at: str | None = None
+        self._connected_monotonic: float | None = None
+        self._auto_reconnect = False
+        self._reconnect_transport: str | None = None
+        self._reconnect_target: str | None = None
+        self._reconnect_params: dict[str, Any] = {}
+        self._reconnect_expected_device_id: str | None = None
+        self._reconnect_attempt = 0
+        self._reconnect_timer: threading.Timer | None = None
+        self._reconnect_stability_timer: threading.Timer | None = None
+        self._reconnect_next_at: str | None = None
+        self._reconnect_next_monotonic: float | None = None
+        self._reconnect_last_attempt_at: str | None = None
+        self._reconnect_last_success_at: str | None = None
+        self._reconnect_blocked_reason: str | None = None
+        if not reconnect_delays or any(delay < 0 for delay in reconnect_delays):
+            raise ValueError("Reconnect delays must contain non-negative seconds")
+        if reconnect_stable_seconds < 0:
+            raise ValueError("Reconnect stable period cannot be negative")
+        self._reconnect_delays = tuple(float(delay) for delay in reconnect_delays)
+        self._reconnect_stable_seconds = float(reconnect_stable_seconds)
         self._events: deque[dict[str, Any]] = deque(maxlen=event_limit)
         self._sequence = 0
         self._profile_id: str | None = None
@@ -228,51 +270,133 @@ class MeshtasticManager:
         name = user.get("longName") or user.get("long_name") or node_id
         return str(node_id).lower(), str(name)
 
-    def connect_tcp(self, host: str, port: int = 4403) -> None:
+    def connect_tcp(
+        self,
+        host: str,
+        port: int = 4403,
+        *,
+        auto_reconnect: bool = False,
+        expected_device_id: str | None = None,
+    ) -> None:
         host = host.strip()
         if not host:
             raise ValueError("TCP host is required")
         if not 1 <= port <= 65535:
             raise ValueError("TCP port must be between 1 and 65535")
-        self._start_connection("tcp", f"{host}:{port}", host=host, port=port)
+        self._start_connection(
+            "tcp",
+            f"{host}:{port}",
+            auto_reconnect=auto_reconnect,
+            expected_device_id=expected_device_id,
+            host=host,
+            port=port,
+        )
 
-    def connect_ble(self, address: str) -> None:
+    def connect_ble(
+        self,
+        address: str,
+        *,
+        auto_reconnect: bool = False,
+        expected_device_id: str | None = None,
+    ) -> None:
         address = address.strip()
         if not address:
             raise ValueError("Choose a Bluetooth device first")
-        self._start_connection("ble", address, address=address)
+        self._start_connection(
+            "ble",
+            address,
+            auto_reconnect=auto_reconnect,
+            expected_device_id=expected_device_id,
+            address=address,
+        )
 
-    def _start_connection(self, transport: str, target: str, **params: Any) -> None:
+    def _start_connection(
+        self,
+        transport: str,
+        target: str,
+        *,
+        auto_reconnect: bool,
+        expected_device_id: str | None,
+        **params: Any,
+    ) -> None:
         self.disconnect(reason="switch")
         with self._lock:
+            self._auto_reconnect = bool(auto_reconnect)
+            self._reconnect_transport = transport
+            self._reconnect_target = target
+            self._reconnect_params = dict(params)
+            self._reconnect_expected_device_id = (
+                expected_device_id.strip().lower() if expected_device_id else None
+            )
+            self._reconnect_attempt = 0
+            self._reconnect_last_attempt_at = None
+            self._reconnect_last_success_at = None
+            self._reconnect_blocked_reason = None
+        self._begin_connection(transport, target, params, automatic=False)
+
+    def _begin_connection(
+        self,
+        transport: str,
+        target: str,
+        params: dict[str, Any],
+        *,
+        automatic: bool,
+        expected_generation: int | None = None,
+    ) -> bool:
+        with self._lock:
+            if automatic and (
+                not self._auto_reconnect
+                or expected_generation != self._generation
+                or self._reconnect_blocked_reason is not None
+            ):
+                return False
             self._generation += 1
             generation = self._generation
-            self._state = "connecting"
+            self._state = "reconnecting" if automatic else "connecting"
             self._transport = transport
             self._target = target
             self._error = None
             self._connected_at = None
+            self._connected_monotonic = None
             self._connect_started_at = _now()
             self._disconnected_at = None
             self._disconnect_reason = None
             self._disconnect_detail = None
-            self._profile_id = None
-            self._profile_name = None
+            self._reconnect_timer = None
+            self._reconnect_next_at = None
+            self._reconnect_next_monotonic = None
+            self._reconnect_last_attempt_at = self._connect_started_at
+            if not automatic:
+                self._profile_id = None
+                self._profile_name = None
             self._remote_nodes = {}
             self._remote_loaded_sections = {}
             self._history_replay_requested_at = None
             self._history_replay_remaining = 0
             self._pending_receive_packets = []
             self._request_cooldowns = {}
-        self._add_event("status", message=f"Connecting via {transport.upper()} to {target}")
+        action = "Reconnect" if automatic else "Connecting"
+        self._add_event(
+            "status",
+            message=f"{action} via {transport.upper()} to {target}",
+            automatic=automatic,
+            reconnect_attempt=self._reconnect_attempt if automatic else 0,
+        )
         threading.Thread(
             target=self._connect_worker,
-            args=(generation, transport, params),
+            args=(generation, transport, params, automatic),
             name=f"meshdesk-connect-{transport}",
             daemon=True,
         ).start()
+        return True
 
-    def _connect_worker(self, generation: int, transport: str, params: dict[str, Any]) -> None:
+    def _connect_worker(
+        self,
+        generation: int,
+        transport: str,
+        params: dict[str, Any],
+        automatic: bool = False,
+    ) -> None:
         interface = None
         try:
             if transport == "tcp":
@@ -286,7 +410,8 @@ class MeshtasticManager:
             else:
                 from meshtastic.ble_interface import BLEInterface
 
-                for attempt in range(1, 4):
+                maximum_attempts = 1 if automatic else 3
+                for attempt in range(1, maximum_attempts + 1):
                     self.pairer.disconnect_device(params["address"])
                     time.sleep(1.5)
                     try:
@@ -304,7 +429,7 @@ class MeshtasticManager:
                                 error_kind == device_not_found_kind
                                 or "No Meshtastic BLE peripheral" in str(exc)
                             )
-                            and attempt < 3
+                            and attempt < maximum_attempts
                         )
                         if not can_retry:
                             raise
@@ -312,11 +437,15 @@ class MeshtasticManager:
                             "status",
                             message=(
                                 "Radio is paired but not advertising yet; "
-                                f"BLE retry {attempt + 1}/3"
+                                f"BLE retry {attempt + 1}/{maximum_attempts}"
                             ),
                         )
                         time.sleep(2)
             profile_id, profile_name = self._interface_profile(interface)
+            with self._lock:
+                expected_device_id = self._reconnect_expected_device_id
+            if expected_device_id and profile_id != expected_device_id:
+                raise DeviceIdentityMismatchError(expected_device_id, profile_id)
             with self._lock:
                 if generation != self._generation:
                     stale = True
@@ -326,12 +455,17 @@ class MeshtasticManager:
                     self._state = "connected"
                     self._error = None
                     self._connected_at = _now()
+                    self._connected_monotonic = time.monotonic()
                     self._last_activity_at = self._connected_at
                     self._last_rx_at = None
                     self._disconnect_reason = None
                     self._disconnect_detail = None
                     self._profile_id = profile_id
                     self._profile_name = profile_name
+                    if self._reconnect_expected_device_id is None:
+                        self._reconnect_expected_device_id = profile_id
+                    self._reconnect_last_success_at = self._connected_at
+                    self._reconnect_blocked_reason = None
                     pending_packets = [
                         packet
                         for pending_interface, packet in self._pending_receive_packets
@@ -341,6 +475,7 @@ class MeshtasticManager:
             if stale:
                 interface.close()
                 return
+            self._schedule_stability_reset(generation, interface)
             self._add_event("status", message="Connected and node database loaded")
             for pending_packet in pending_packets:
                 self._on_receive(pending_packet, interface)
@@ -351,10 +486,14 @@ class MeshtasticManager:
                 daemon=True,
             ).start()
         except Exception as exc:  # Hardware/network errors vary by platform.
-            logger.exception("Meshtastic connection failed")
+            if automatic:
+                logger.warning("Meshtastic reconnect attempt failed: %s", exc)
+            else:
+                logger.exception("Meshtastic connection failed")
             if interface is not None:
                 with contextlib.suppress(Exception):
                     interface.close()
+            reason = self._classify_connection_error(exc, transport)
             with self._lock:
                 if generation != self._generation:
                     return
@@ -362,14 +501,17 @@ class MeshtasticManager:
                 self._state = "error"
                 self._error = str(exc) or type(exc).__name__
                 self._disconnected_at = _now()
-                self._disconnect_reason = self._classify_connection_error(exc, transport)
+                self._disconnect_reason = reason
                 self._disconnect_detail = self._error
                 self._last_transport = transport
                 self._last_target = self._target
             self._add_event("error", message=self._error)
+            self._schedule_reconnect(generation, reason)
 
     @staticmethod
     def _classify_connection_error(exc: Exception, transport: str) -> str:
+        if isinstance(exc, DeviceIdentityMismatchError):
+            return "identity_mismatch"
         message = str(exc).casefold()
         if "timeout" in message or "timed out" in message:
             return "timeout"
@@ -385,13 +527,101 @@ class MeshtasticManager:
             return "pairing_required"
         return "connection_failed"
 
+    def _schedule_stability_reset(self, generation: int, interface: Any) -> None:
+        with self._lock:
+            if not self._auto_reconnect or self._reconnect_attempt == 0:
+                return
+            if self._reconnect_stability_timer is not None:
+                self._reconnect_stability_timer.cancel()
+            timer = threading.Timer(
+                self._reconnect_stable_seconds,
+                self._mark_reconnect_stable,
+                args=(generation, interface),
+            )
+            timer.daemon = True
+            self._reconnect_stability_timer = timer
+        timer.start()
+
+    def _mark_reconnect_stable(self, generation: int, interface: Any) -> None:
+        with self._lock:
+            if (
+                generation != self._generation
+                or interface is not self._interface
+                or self._state != "connected"
+            ):
+                return
+            self._reconnect_attempt = 0
+            self._reconnect_stability_timer = None
+        self._add_event("status", message="Reconnect session is stable; backoff reset")
+
+    def _schedule_reconnect(self, generation: int, reason: str | None) -> bool:
+        with self._lock:
+            if generation != self._generation or not self._auto_reconnect:
+                return False
+            if reason not in RECONNECT_ELIGIBLE_REASONS:
+                self._reconnect_blocked_reason = reason or "connection_failed"
+                return False
+            if self._reconnect_timer is not None:
+                return False
+            self._reconnect_attempt += 1
+            delay = self._reconnect_delays[
+                min(self._reconnect_attempt - 1, len(self._reconnect_delays) - 1)
+            ]
+            self._reconnect_next_monotonic = time.monotonic() + delay
+            self._reconnect_next_at = datetime.fromtimestamp(
+                time.time() + delay,
+                UTC,
+            ).isoformat()
+            timer = threading.Timer(delay, self._run_reconnect, args=(generation,))
+            timer.daemon = True
+            self._reconnect_timer = timer
+            attempt = self._reconnect_attempt
+            target = self._reconnect_target
+        self._add_event(
+            "status",
+            message=f"Reconnect attempt {attempt} scheduled in {delay:g} seconds",
+            automatic=True,
+            reconnect_attempt=attempt,
+            reconnect_delay_seconds=delay,
+            target=target,
+        )
+        timer.start()
+        return True
+
+    def _run_reconnect(self, expected_generation: int) -> None:
+        with self._lock:
+            transport = self._reconnect_transport
+            target = self._reconnect_target
+            params = dict(self._reconnect_params)
+        if transport and target:
+            self._begin_connection(
+                transport,
+                target,
+                params,
+                automatic=True,
+                expected_generation=expected_generation,
+            )
+
     def disconnect(self, reason: str = "manual") -> None:
         with self._lock:
             self._generation += 1
+            reconnect_timer = self._reconnect_timer
+            stability_timer = self._reconnect_stability_timer
+            self._reconnect_timer = None
+            self._reconnect_stability_timer = None
+            self._auto_reconnect = False
+            self._reconnect_next_at = None
+            self._reconnect_next_monotonic = None
+            self._reconnect_blocked_reason = None
+            self._reconnect_attempt = 0
             interface = self._interface
             transport = self._transport
             target = self._target
-            had_connection = interface is not None or self._state in {"connecting", "connected"}
+            had_connection = (
+                interface is not None
+                or reconnect_timer is not None
+                or self._state in {"connecting", "reconnecting", "connected"}
+            )
             if had_connection:
                 self._last_transport = transport
                 self._last_target = target
@@ -409,6 +639,11 @@ class MeshtasticManager:
             self._target = None
             self._error = None
             self._connected_at = None
+            self._connected_monotonic = None
+        if reconnect_timer is not None:
+            reconnect_timer.cancel()
+        if stability_timer is not None:
+            stability_timer.cancel()
         self._cancel_outbound_messages()
         if interface is not None:
             close_finished = threading.Event()
@@ -2148,8 +2383,8 @@ class MeshtasticManager:
             interface = self._interface
             if self._state == "connected":
                 health_state = "healthy"
-            elif self._state == "connecting":
-                health_state = "connecting"
+            elif self._state in {"connecting", "reconnecting"}:
+                health_state = self._state
             elif self._state == "error" and self._disconnect_reason == "connection_lost":
                 health_state = "lost"
             elif self._state == "error":
@@ -2158,6 +2393,29 @@ class MeshtasticManager:
                 health_state = "disconnected"
             else:
                 health_state = "idle"
+            reconnect_waiting = self._reconnect_timer is not None
+            reconnect_active = self._auto_reconnect and (
+                reconnect_waiting or self._state == "reconnecting"
+            )
+            if not self._auto_reconnect:
+                reconnect_phase = "disabled"
+            elif self._reconnect_blocked_reason:
+                reconnect_phase = "blocked"
+            elif self._state == "reconnecting":
+                reconnect_phase = "connecting"
+            elif reconnect_waiting:
+                reconnect_phase = "waiting"
+            elif self._state == "connected" and self._reconnect_attempt:
+                reconnect_phase = "stabilizing"
+            elif self._state == "connected":
+                reconnect_phase = "armed"
+            else:
+                reconnect_phase = "idle"
+            reconnect_remaining = (
+                max(0.0, self._reconnect_next_monotonic - time.monotonic())
+                if self._reconnect_next_monotonic is not None
+                else None
+            )
             result = {
                 "state": self._state,
                 "transport": self._transport,
@@ -2179,12 +2437,18 @@ class MeshtasticManager:
                     "transport": self._transport or self._last_transport,
                     "target": self._target or self._last_target,
                     "reconnect_eligible": self._disconnect_reason
-                    in {
-                        "connection_lost",
-                        "timeout",
-                        "connection_refused",
-                        "device_not_found",
-                        "connection_failed",
+                    in RECONNECT_ELIGIBLE_REASONS,
+                    "reconnect": {
+                        "enabled": self._auto_reconnect,
+                        "active": reconnect_active,
+                        "phase": reconnect_phase,
+                        "attempt": self._reconnect_attempt,
+                        "next_at": self._reconnect_next_at,
+                        "remaining_seconds": reconnect_remaining,
+                        "last_attempt_at": self._reconnect_last_attempt_at,
+                        "last_success_at": self._reconnect_last_success_at,
+                        "blocked_reason": self._reconnect_blocked_reason,
+                        "max_delay_seconds": self._reconnect_delays[-1],
                     },
                 },
             }
@@ -2414,7 +2678,7 @@ class MeshtasticManager:
     def _on_receive(self, packet: dict[str, Any], interface: Any) -> None:
         with self._lock:
             if interface is not self._interface:
-                if self._state == "connecting" and self._interface is None:
+                if self._state in {"connecting", "reconnecting"} and self._interface is None:
                     self._pending_receive_packets.append((interface, packet))
                 return
             self._last_rx_at = _now()
@@ -2480,6 +2744,10 @@ class MeshtasticManager:
         with self._lock:
             if interface is not self._interface:
                 return
+            self._generation += 1
+            generation = self._generation
+            stability_timer = self._reconnect_stability_timer
+            self._reconnect_stability_timer = None
             self._interface = None
             self._state = "error"
             self._error = "Connection to the Meshtastic device was lost"
@@ -2489,15 +2757,18 @@ class MeshtasticManager:
             self._disconnected_at = _now()
             self._disconnect_reason = "connection_lost"
             self._disconnect_detail = self._error
+        if stability_timer is not None:
+            stability_timer.cancel()
         self._cancel_outbound_messages()
         self._add_event("error", message=self._error)
+        self._schedule_reconnect(generation, "connection_lost")
 
     def wait_until_settled(self, timeout: float = 10.0) -> str:
         """Small helper used by integration tests and diagnostics."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             state = self.status()["state"]
-            if state != "connecting":
+            if state not in {"connecting", "reconnecting"}:
                 return state
             time.sleep(0.05)
         return self.status()["state"]

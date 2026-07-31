@@ -24,6 +24,7 @@ const state = {
   connectionProfileDirty: false,
   connectionProfileModalId: null,
   connectionIdentityMismatch: null,
+  reconnectActive: false,
   discoveredTcpDevices: [],
   roleAdvisorTrigger: null,
   status: null,
@@ -35,12 +36,14 @@ const initializedHelpTriggers = new WeakSet();
 const statusLabels = {
   disconnected: "Изключено",
   connecting: "Свързване…",
+  reconnecting: "Повторно свързване…",
   connected: "Свързано",
   error: "Грешка",
 };
 const healthLabels = {
   idle: "Няма активна сесия",
   connecting: "Извършва се Meshtastic handshake",
+  reconnecting: "Извършва се автоматичен reconnect",
   healthy: "Transport сесията е активна",
   lost: "Връзката беше неочаквано загубена",
   failed: "Свързването не успя",
@@ -55,6 +58,7 @@ const disconnectReasonLabels = {
   pairing_required: "Bluetooth сдвояването липсва или не е разрешено",
   connection_failed: "Transport-ът не успя да установи сесия",
   connection_lost: "Активната transport сесия беше прекъсната",
+  identity_mismatch: "Endpoint-ът върна различен Meshtastic node ID",
 };
 
 function organizeWorkspace() {
@@ -727,11 +731,12 @@ function updateConnectionProfileUi() {
     return;
   }
   const modified = state.connectionProfileDirty ? " · има незаписани промени" : "";
+  const reconnect = profile.auto_reconnect ? " · auto-reconnect включен" : "";
   const lastUsed = profile.last_used_at
     ? new Date(profile.last_used_at).toLocaleString()
     : "никога";
   $("#connectionProfileHint").textContent =
-    `${connectionTarget(profile)}${modified}. Последно използван: ${lastUsed}`;
+    `${connectionTarget(profile)}${modified}${reconnect}. Последно използван: ${lastUsed}`;
   if (state.connectionIdentityMismatch) {
     const mismatch = state.connectionIdentityMismatch;
     identity.className = "connection-identity-status mismatch";
@@ -832,6 +837,7 @@ function openConnectionProfileModal() {
     (values.transport === "tcp"
       ? values.host
       : $("#bleDevice").selectedOptions[0]?.text || "");
+  $("#connectionProfileAutoReconnect").checked = Boolean(profile?.auto_reconnect);
   $("#connectionProfileModal").classList.remove("hidden");
   setTimeout(() => $("#connectionProfileName").focus(), 50);
 }
@@ -857,7 +863,11 @@ async function saveConnectionProfile() {
         : "/api/connection-profiles",
       {
         method: profileId ? "PUT" : "POST",
-        body: JSON.stringify({ name, ...connectionValues() }),
+        body: JSON.stringify({
+          name,
+          ...connectionValues(),
+          auto_reconnect: $("#connectionProfileAutoReconnect").checked,
+        }),
       },
     );
     $("#connectionProfileModal").classList.add("hidden");
@@ -941,12 +951,15 @@ function updateControls(status) {
   state.status = status;
   state.connection = status.state;
   const connected = status.state === "connected";
-  const busy = status.state === "connecting";
+  const reconnect = status.health?.reconnect || {};
+  const reconnectActive = Boolean(reconnect.active);
+  state.reconnectActive = reconnectActive;
+  const busy = ["connecting", "reconnecting"].includes(status.state);
   const pill = $("#statusPill");
   pill.className = `status ${status.state}`;
   pill.querySelector("strong").textContent = statusLabels[status.state] || status.state;
 
-  const showCompact = connected || busy;
+  const showCompact = connected || busy || reconnectActive;
   $("#connectionCompact").classList.toggle("hidden", !showCompact);
   $("#connectionDetails").classList.toggle(
     "hidden",
@@ -962,11 +975,19 @@ function updateControls(status) {
     user.longName || user.long_name || status.target || "Meshtastic радио";
   $("#connectedTransport").textContent = (status.transport || state.transport).toUpperCase();
   $("#connectedTarget").textContent =
-    busy ? `Свързване към ${status.target || "устройството"}…` : status.target || "—";
+    busy
+      ? `Свързване към ${status.target || "устройството"}…`
+      : reconnectActive
+        ? `Изчакване за ${status.target || "устройството"}…`
+        : status.target || "—";
 
-  $("#connectButton").disabled = busy || connected;
-  $("#connectButton").textContent = busy ? "Свързване…" : "Свържи";
-  $("#disconnectButton").disabled = !busy && !connected;
+  $("#connectButton").disabled = busy || connected || reconnectActive;
+  $("#connectButton").textContent = reconnectActive
+    ? "Reconnect активен"
+    : busy
+      ? "Свързване…"
+      : "Свържи";
+  $("#disconnectButton").disabled = !busy && !connected && !reconnectActive;
   $("#messageText").disabled = !connected;
   $("#channel").disabled = !connected;
   $("#wantAck").disabled = !connected;
@@ -983,6 +1004,17 @@ function updateControls(status) {
   document.querySelectorAll(".admin-action").forEach((button) => {
     button.disabled = !connected;
   });
+  if (!connected) {
+    document
+      .querySelectorAll(
+        ".node-quick-action, .node-preference, .node-message, " +
+          "#configForm input, #configForm select, #configForm button, " +
+          "#channelEditor input, #channelEditor select, #channelEditor button",
+      )
+      .forEach((control) => {
+        control.disabled = true;
+      });
+  }
   $("#localPublicKey").textContent = status.public_key || "—";
   updateConnectionHealth(status);
   applyRequestCooldowns();
@@ -1047,8 +1079,8 @@ function updateConnectionHealth(status) {
     state:
       status.state === "connected"
         ? "healthy"
-        : status.state === "connecting"
-          ? "connecting"
+        : ["connecting", "reconnecting"].includes(status.state)
+          ? status.state
           : status.state === "error"
             ? "failed"
             : "idle",
@@ -1081,14 +1113,31 @@ function updateConnectionHealth(status) {
   $("#healthLastActivity").textContent = relativeTime(health.last_activity_at);
   $("#healthLastRx").textContent = relativeTime(health.last_rx_at);
   $("#healthDisconnectedAt").textContent = relativeTime(health.disconnected_at);
-  $("#healthReconnectPolicy").textContent = health.reconnect_eligible
-    ? "Допустим след изрично включване"
-    : "Не е допустим за това състояние";
+  const reconnect = health.reconnect || {};
+  const remaining = Math.max(0, Math.ceil(reconnect.remaining_seconds || 0));
+  const reconnectLabels = {
+    disabled: "Изключен",
+    armed: "Включен · следи активната сесия",
+    waiting: `Опит ${reconnect.attempt} след ${remaining} s`,
+    connecting: `Опит ${reconnect.attempt} · handshake`,
+    stabilizing: `Свързан · проверка за стабилност след опит ${reconnect.attempt}`,
+    blocked: `Спрян: ${disconnectReasonLabels[reconnect.blocked_reason] || reconnect.blocked_reason}`,
+    idle: "Включен · няма насрочен опит",
+  };
+  $("#healthReconnectPolicy").textContent =
+    reconnectLabels[reconnect.phase] ||
+    (health.reconnect_eligible
+      ? "Допустим след изрично включване"
+      : "Не е допустим за това състояние");
   $("#connectionHealthCompact").textContent =
     health.state === "healthy"
       ? `активна ${elapsedTime(health.connected_at)}`
-      : health.state === "connecting"
-        ? "handshake…"
+      : ["connecting", "reconnecting"].includes(health.state)
+        ? reconnect.attempt
+          ? `reconnect #${reconnect.attempt}…`
+          : "handshake…"
+        : reconnect.phase === "waiting"
+          ? `reconnect #${reconnect.attempt} след ${remaining}s`
         : healthLabels[health.state] || health.state;
 }
 
@@ -1105,20 +1154,29 @@ async function refreshStatus() {
       localStorage.removeItem("meshdeskReadThrough");
     }
     const wasConnected = state.connection === "connected";
+    const reconnectWasActive = state.reconnectActive;
+    const reconnectIsActive = Boolean(status.health?.reconnect?.active);
     if (!wasConnected && status.state === "connected") {
       state.connectionExpanded = false;
-    } else if (status.state !== "connected" && status.state !== "connecting") {
+    } else if (
+      status.state !== "connected" &&
+      !["connecting", "reconnecting"].includes(status.state) &&
+      !status.health?.reconnect?.active
+    ) {
       state.connectionExpanded = true;
     }
     if (
-      wasConnected &&
+      (wasConnected || reconnectWasActive) &&
       status.state !== "connected" &&
-      status.state !== "connecting"
+      !["connecting", "reconnecting"].includes(status.state) &&
+      !reconnectIsActive
     ) {
       clearDeviceBoundUi(
         disconnectReasonLabels[status.health?.reason] || "Disconnected",
         status.event_sequence,
       );
+    } else if (wasConnected && status.health?.reconnect?.active && state.inspector) {
+      closeInspector();
     }
     updateControls(status);
     if (!wasConnected && status.state === "connected") {
