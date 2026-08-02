@@ -124,6 +124,14 @@ SECTION_EXCLUDED_MODULES = {
     "bluetooth": "BLUETOOTH_CONFIG",
     "network": "NETWORK_CONFIG",
 }
+REMOTE_AUTHORIZATION_ERRORS = {
+    "NOT_AUTHORIZED",
+    "PKI_FAILED",
+    "PKI_UNKNOWN_PUBKEY",
+    "ADMIN_BAD_SESSION_KEY",
+    "ADMIN_PUBLIC_KEY_UNAUTHORIZED",
+    "PKI_SEND_FAIL_PUBLIC_KEY",
+}
 
 
 def _now() -> str:
@@ -2745,11 +2753,11 @@ class MeshtasticManager:
         )
 
         def worker() -> None:
+            response: dict[str, Any] = {}
+            session_refreshed = False
+            attempts = 1
             try:
                 remote = self._managed_node(node_id)
-                response: dict[str, Any] = {}
-                session_refreshed = False
-                attempts = 1
 
                 def capture_metadata(packet: dict[str, Any]) -> None:
                     response["packet"] = _safe(packet)
@@ -2812,14 +2820,43 @@ class MeshtasticManager:
                     response_packet=response.get("packet"),
                 )
             except Exception as exc:
-                logger.exception("Remote capability request failed")
+                error_text = str(exc) or type(exc).__name__
+                error_code = response.get("error")
+                rejected = error_code in REMOTE_AUTHORIZATION_ERRORS
+                failure = {
+                    "node_id": node_id,
+                    "status": "rejected" if rejected else "unavailable",
+                    "source": "remote_admin",
+                    "updated_at": _now(),
+                    "reason": error_text,
+                    "error_code": error_code,
+                    "features": {},
+                    "config_sections": {},
+                }
+                with self._lock:
+                    if generation == self._generation and interface is self._interface:
+                        self._remote_capabilities[node_id] = failure
+                if error_code:
+                    logger.info(
+                        "Remote capability request for %s was rejected: %s",
+                        node_id,
+                        error_code,
+                    )
+                else:
+                    logger.exception("Remote capability request failed")
                 self._add_event(
                     "operation_result",
                     operation="capabilities",
                     target=node_id,
                     remote=True,
                     success=False,
-                    error=str(exc) or type(exc).__name__,
+                    error=error_text,
+                    result={
+                        "capabilities": failure,
+                        "session_refreshed": session_refreshed,
+                        "attempts": attempts,
+                    },
+                    response_packet=response.get("packet"),
                 )
 
         threading.Thread(
@@ -2856,6 +2893,14 @@ class MeshtasticManager:
                 "target": target,
                 "operation": operation,
                 "reason": "DeviceMetadata has not been loaded for this target",
+            }
+        if capabilities.get("status") != "known":
+            return {
+                "state": capabilities.get("status", "unknown"),
+                "target": target,
+                "operation": operation,
+                "reason": capabilities.get("reason"),
+                "error_code": capabilities.get("error_code"),
             }
 
         if node_id and not capabilities["features"]["pkc"]["supported"]:

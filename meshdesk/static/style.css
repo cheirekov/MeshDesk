@@ -1513,6 +1513,8 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   background: rgba(80, 59, 17, 0.2);
 }
 .capability-card.known { border-color: #355344; background: rgba(20, 45, 36, 0.42); }
+.capability-card.rejected { border-color: #743e3e; background: rgba(82, 29, 29, 0.3); }
+.capability-card.unavailable { border-color: #66512b; background: rgba(72, 53, 17, 0.24); }
 .capability-kicker {
   display: block;
   margin-bottom: 4px;
@@ -1521,6 +1523,7 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   letter-spacing: 0.1em;
 }
 .capability-card.known .capability-kicker { color: var(--green); }
+.capability-card.rejected .capability-kicker { color: #ff9b9b; }
 .capability-card strong { font-size: 0.77rem; }
 .capability-card p { margin-top: 4px; color: var(--muted); font-size: 0.66rem; line-height: 1.4; }
 .capability-features { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -1533,6 +1536,7 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 }
 .capability-chip.supported { border-color: #365a3d; color: #bce899; }
 .capability-chip.unsupported { border-color: #6b3838; color: #ff9b9b; }
+.capability-chip.rejected { border-color: #7a3c3c; color: #ff9b9b; }
 .capability-chip.unknown { border-color: #66512b; color: #d7bc7b; }
 .admin-grid {
   display: grid;

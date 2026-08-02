@@ -502,6 +502,46 @@ def test_remote_capability_request_caches_metadata_and_refreshes_stale_session()
     ] == "2.7.8"
 
 
+def test_remote_capability_rejection_is_cached_as_visible_authorization_result():
+    manager, interface = connected_manager()
+    interface.remote_node.admin_metadata_responses = [
+        {
+            "decoded": {
+                "routing": {"errorReason": "ADMIN_PUBLIC_KEY_UNAUTHORIZED"},
+            }
+        }
+    ]
+
+    manager.request_capabilities("!12345678")
+    deadline = time.monotonic() + 2
+    result = None
+    while time.monotonic() < deadline:
+        result = next(
+            (
+                event
+                for event in manager.events()
+                if event["kind"] == "operation_result"
+                and event["operation"] == "capabilities"
+            ),
+            None,
+        )
+        if result is not None:
+            break
+        time.sleep(0.01)
+
+    rejected = manager.capability_inventory()["remote"]["!12345678"]
+    assert result is not None
+    assert result["success"] is False
+    assert rejected["status"] == "rejected"
+    assert rejected["error_code"] == "ADMIN_PUBLIC_KEY_UNAUTHORIZED"
+    preflight = manager._capability_preflight(  # noqa: SLF001
+        "remote_config",
+        "!12345678",
+        section="telemetry",
+    )
+    assert preflight["state"] == "rejected"
+
+
 def test_auto_reconnect_waits_with_backoff_and_manual_disconnect_stops_it():
     manager = MeshtasticManager(reconnect_delays=(60,))
     interface = FakeInterface()

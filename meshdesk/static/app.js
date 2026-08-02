@@ -1847,25 +1847,67 @@ function selectedAdminCapabilities() {
   return nodeId ? inventory.remote?.[nodeId.toLowerCase()] : inventory.local;
 }
 
+function capabilityFailureMessage(capabilities) {
+  const messages = {
+    NOT_AUTHORIZED: "Възелът не разрешава тази административна заявка.",
+    PKI_FAILED: "PKI проверката е неуспешна.",
+    PKI_UNKNOWN_PUBKEY:
+      "Публичният ключ на това gateway радио не е познат на възела.",
+    ADMIN_BAD_SESSION_KEY:
+      "Remote admin session key остава невалиден след повторния опит.",
+    ADMIN_PUBLIC_KEY_UNAUTHORIZED:
+      "Публичният ключ на това gateway радио не е в списъка с администратори.",
+    PKI_SEND_FAIL_PUBLIC_KEY:
+      "Възелът не разполага с необходимия публичен ключ за отговора.",
+    NO_ROUTE: "В момента няма известен маршрут до възела.",
+    TIMEOUT: "Възелът не отговори преди изтичането на timeout-а.",
+  };
+  return (
+    messages[capabilities?.error_code] ||
+    capabilities?.reason ||
+    "Проверката не завърши."
+  );
+}
+
 function renderAdminCapabilities() {
   const card = $("#adminCapabilityCard");
   if (!card) return;
   const nodeId = $("#adminTarget").value || null;
   const capabilities = selectedAdminCapabilities();
   const known = capabilities?.status === "known";
-  card.className = `capability-card ${known ? "known" : "unknown"}`;
+  const rejected = capabilities?.status === "rejected";
+  const unavailable = capabilities?.status === "unavailable";
+  const checkedAt = capabilities?.updated_at
+    ? ` · проверено ${new Date(capabilities.updated_at).toLocaleString()}`
+    : "";
+  const visualState = known
+    ? "known"
+    : rejected
+      ? "rejected"
+      : unavailable
+        ? "unavailable"
+        : "unknown";
+  card.className = `capability-card ${visualState}`;
   $("#adminCapabilityTitle").textContent = known
     ? `${capabilities.hardware_model || "Unknown hardware"} · firmware ${
         capabilities.firmware_version || "неизвестен"
       }`
-    : "Възможностите не са проверени";
+    : rejected
+      ? "Remote administration: достъпът е отказан"
+      : unavailable
+        ? "Проверката временно не е успешна"
+        : "Възможностите не са проверени";
   $("#adminCapabilityDetail").textContent = known
     ? `${capabilities.node_id} · role ${capabilities.role || "unknown"} · metadata source: ${
         capabilities.source
       }`
-    : nodeId
-      ? "Изпрати една PKI admin metadata заявка преди чувствителна remote операция."
-      : capabilities?.reason || "Локалното радио не предостави DeviceMetadata.";
+    : rejected || unavailable
+      ? `${capabilityFailureMessage(capabilities)}${
+          capabilities.error_code ? ` · ${capabilities.error_code}` : ""
+        }${checkedAt}`
+      : nodeId
+        ? "Изпрати една PKI admin metadata заявка преди чувствителна remote операция."
+        : capabilities?.reason || "Локалното радио не предостави DeviceMetadata.";
   const features = capabilities?.features || {};
   $("#adminCapabilityFeatures").innerHTML = known
     ? Object.values(features)
@@ -1876,20 +1918,30 @@ function renderAdminCapabilities() {
             )}: ${feature.supported ? "да" : "не"}</span>`,
         )
         .join("")
-    : '<span class="capability-chip unknown">unknown · без предположения</span>';
+    : rejected
+      ? '<span class="capability-chip rejected">PKI admin · отказан</span>'
+      : unavailable
+        ? '<span class="capability-chip unknown">временно недостъпно · опитай отново</span>'
+        : '<span class="capability-chip unknown">unknown · без предположения</span>';
   $("#refreshCapabilities").disabled = state.connection !== "connected";
 
   const pkcUnsupported = Boolean(
     nodeId && known && features.pkc?.state === "unsupported",
   );
+  const authorizationRejected = Boolean(nodeId && rejected);
   document.querySelectorAll(".admin-action").forEach((button) => {
     const shutdownUnsupported =
       button.dataset.adminAction === "shutdown" &&
       known &&
       features.shutdown?.state === "unsupported";
     button.disabled =
-      state.connection !== "connected" || pkcUnsupported || shutdownUnsupported;
-    if (pkcUnsupported) {
+      state.connection !== "connected" ||
+      authorizationRejected ||
+      pkcUnsupported ||
+      shutdownUnsupported;
+    if (authorizationRejected) {
+      button.title = capabilityFailureMessage(capabilities);
+    } else if (pkcUnsupported) {
       button.title = "Remote metadata reports that PKC is unavailable";
     } else if (shutdownUnsupported) {
       button.title = "Device metadata reports that software shutdown is unsupported";

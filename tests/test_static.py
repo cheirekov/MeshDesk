@@ -66,6 +66,8 @@ def test_saved_connection_profiles_are_available_in_connection_panel() -> None:
     assert 'id="adminCapabilityCard"' in page.text
     assert 'id="refreshCapabilities"' in page.text
     assert "renderAdminCapabilities" in script.text
+    assert "Remote administration: достъпът е отказан" in script.text
+    assert "ADMIN_PUBLIC_KEY_UNAUTHORIZED" in script.text
     assert "config-capability-notice" in script.text
 
 
