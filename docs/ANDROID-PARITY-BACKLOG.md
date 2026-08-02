@@ -16,7 +16,7 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 
 | ID | Приоритет | Функция | Зависимости | Статус |
 |---|---|---|---|---|
-| CON-01 | P1 | USB Serial discovery и transport | общ connection lifecycle | queued |
+| CON-01 | P1 | USB Serial discovery и transport | общ connection lifecycle | **completed** |
 | CON-02 | P1 | TCP mDNS `_meshtastic._tcp` discovery | няма | **completed** |
 | CON-03 | P1 | Recent devices и именувани connection profiles | profile identity | **completed** |
 | CON-04 | P1 | Auto-reconnect с backoff и health state | CON-01/03 | **completed** |

@@ -35,6 +35,15 @@ class StubManager:
     ):
         self.calls.append(("ble", address, auto_reconnect, expected_device_id))
 
+    def connect_serial(
+        self,
+        device,
+        *,
+        auto_reconnect=False,
+        expected_device_id=None,
+    ):
+        self.calls.append(("serial", device, auto_reconnect, expected_device_id))
+
     def disconnect(self):
         self.calls.append(("disconnect",))
 
@@ -171,6 +180,20 @@ class StubTcpDiscovery:
         ]
 
 
+class StubSerialDiscovery:
+    @staticmethod
+    def discover():
+        return [
+            {
+                "device": "/dev/ttyACM0",
+                "connection_path": "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+                "stable_path": "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+                "description": "Meshtastic CDC",
+                "accessible": True,
+            }
+        ]
+
+
 def test_tcp_connection_endpoint():
     manager = StubManager()
     with TestClient(create_app(manager)) as client:
@@ -191,6 +214,63 @@ def test_tcp_mdns_discovery_endpoint():
     assert response.status_code == 200
     assert response.json()["devices"][0]["host"] == "172.16.19.176"
     assert discovery.timeouts == [1.5]
+
+
+def test_serial_discovery_and_connection_endpoints():
+    manager = StubManager()
+    with TestClient(
+        create_app(manager, serial_discovery=StubSerialDiscovery())
+    ) as client:
+        discovered = client.get("/api/discovery/serial")
+        connected = client.post(
+            "/api/connect",
+            json={
+                "transport": "serial",
+                "device": "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+            },
+        )
+
+    assert discovered.status_code == 200
+    assert discovered.json()["devices"][0]["device"] == "/dev/ttyACM0"
+    assert connected.status_code == 202
+    assert manager.calls[0] == (
+        "serial",
+        "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+        False,
+        None,
+    )
+
+
+def test_serial_saved_profile_enables_reconnect_and_identity_guard(tmp_path):
+    manager = StubManager()
+    store = ConnectionProfileStore(tmp_path / "connection-profiles.json")
+    profile = store.create(
+        {
+            "name": "USB Gateway",
+            "transport": "serial",
+            "device": "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+            "auto_reconnect": True,
+        }
+    )
+    store.verify_identity(profile["id"], "!12345678", "USB Gateway")
+
+    with TestClient(create_app(manager, store)) as client:
+        response = client.post(
+            "/api/connect",
+            json={
+                "transport": "serial",
+                "device": "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+                "connection_profile_id": profile["id"],
+            },
+        )
+
+    assert response.status_code == 202
+    assert manager.calls[0] == (
+        "serial",
+        "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+        True,
+        "!12345678",
+    )
 
 
 def test_connection_profile_crud_and_usage(tmp_path):

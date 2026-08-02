@@ -26,6 +26,7 @@ const state = {
   connectionIdentityMismatch: null,
   reconnectActive: false,
   discoveredTcpDevices: [],
+  discoveredSerialDevices: [],
   roleAdvisorTrigger: null,
   status: null,
   readThrough: Number(localStorage.getItem("meshdeskReadThrough") || 0) || 0,
@@ -55,6 +56,7 @@ const disconnectReasonLabels = {
   timeout: "Изтече времето за свързване или handshake",
   connection_refused: "TCP endpoint-ът отказа връзката",
   device_not_found: "Устройството не е намерено или не рекламира",
+  permission_denied: "Няма read/write достъп до transport устройството",
   pairing_required: "Bluetooth сдвояването липсва или не е разрешено",
   connection_failed: "Transport-ът не успя да установи сесия",
   connection_lost: "Активната transport сесия беше прекъсната",
@@ -568,6 +570,7 @@ function setTransport(transport) {
   });
   $("#tcpFields").classList.toggle("hidden", transport !== "tcp");
   $("#bleFields").classList.toggle("hidden", transport !== "ble");
+  $("#serialFields").classList.toggle("hidden", transport !== "serial");
   $("#pairingBox").classList.toggle("hidden", transport !== "ble");
   $("#tcpDiscoveryResults").classList.toggle(
     "hidden",
@@ -576,7 +579,74 @@ function setTransport(transport) {
   $("#connectionDetail").textContent =
     transport === "tcp"
       ? "Нативен Meshtastic TCP порт 4403 — без HTTP/CORS."
-      : "Bluetooth се обслужва от Linux BlueZ — без Web Bluetooth.";
+      : transport === "ble"
+        ? "Bluetooth се обслужва от Linux BlueZ — без Web Bluetooth."
+        : "Директна USB Serial връзка през избрано /dev устройство.";
+}
+
+async function discoverSerialDevices() {
+  const button = $("#discoverSerialButton");
+  button.disabled = true;
+  button.textContent = "Откриване…";
+  try {
+    const result = await api("/api/discovery/serial");
+    state.discoveredSerialDevices = result.devices || [];
+    const select = $("#serialDevice");
+    select.innerHTML = "";
+    if (!state.discoveredSerialDevices.length) {
+      select.add(new Option("Не е намерено Meshtastic USB устройство", ""));
+      toast("Не е намерено Meshtastic USB Serial устройство", true);
+    } else {
+      state.discoveredSerialDevices.forEach((device) => {
+        const identity = device.product || device.description || "USB Serial";
+        const permission = device.accessible ? "" : " · няма достъп";
+        select.add(
+          new Option(
+            `${identity} · ${device.device}${permission}`,
+            device.connection_path,
+          ),
+        );
+      });
+      renderSerialDiscoveryDetails();
+      toast(`Открити USB устройства: ${state.discoveredSerialDevices.length}`);
+    }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Открий USB";
+  }
+}
+
+function renderSerialDiscoveryDetails() {
+  const container = $("#serialDiscoveryDetails");
+  const device = state.discoveredSerialDevices.find(
+    (item) => item.connection_path === $("#serialDevice").value,
+  );
+  container.classList.toggle("hidden", !device);
+  if (!device) {
+    container.innerHTML = "";
+    return;
+  }
+  const usbId = [device.vid, device.pid].filter(Boolean).join(":") || "—";
+  container.innerHTML = `
+    <div class="tcp-discovery-identity">
+      <div>
+        <span>USB SERIAL</span>
+        <strong>${escapeHtml(device.product || device.description)}</strong>
+      </div>
+      <code>${escapeHtml(device.connection_path)}</code>
+    </div>
+    <dl>
+      <div><dt>Текущ порт</dt><dd>${escapeHtml(device.device)}</dd></div>
+      <div><dt>Stable path</dt><dd>${escapeHtml(device.stable_path || "не е наличен")}</dd></div>
+      <div><dt>Manufacturer</dt><dd>${escapeHtml(device.manufacturer || "—")}</dd></div>
+      <div><dt>USB VID:PID</dt><dd>${escapeHtml(usbId)}</dd></div>
+      <div><dt>Serial number</dt><dd>${escapeHtml(device.serial_number || "—")}</dd></div>
+      <div><dt>Достъп</dt><dd class="${device.accessible ? "" : "danger-text"}">${
+        device.accessible ? "read/write" : escapeHtml(device.permission_hint || "няма достъп")
+      }</dd></div>
+    </dl>`;
 }
 
 async function discoverTcpDevices() {
@@ -691,25 +761,39 @@ function useDiscoveredTcpDevice() {
 }
 
 function connectionValues() {
-  return state.transport === "tcp"
-    ? {
-        transport: "tcp",
-        host: $("#tcpHost").value.trim(),
-        port: Number($("#tcpPort").value),
-        address: "",
-      }
-    : {
-        transport: "ble",
-        host: "",
-        port: 4403,
-        address: $("#bleDevice").value,
-      };
+  if (state.transport === "tcp") {
+    return {
+      transport: "tcp",
+      host: $("#tcpHost").value.trim(),
+      port: Number($("#tcpPort").value),
+      address: "",
+      device: "",
+    };
+  }
+  if (state.transport === "ble") {
+    return {
+      transport: "ble",
+      host: "",
+      port: 4403,
+      address: $("#bleDevice").value,
+      device: "",
+    };
+  }
+  return {
+    transport: "serial",
+    host: "",
+    port: 4403,
+    address: "",
+    device: $("#serialDevice").value,
+  };
 }
 
 function connectionTarget(values) {
-  return values.transport === "tcp"
-    ? `${values.host || "—"}:${values.port || 4403}`
-    : values.address || "Няма избрано BLE устройство";
+  if (values.transport === "tcp") return `${values.host || "—"}:${values.port || 4403}`;
+  if (values.transport === "ble") {
+    return values.address || "Няма избрано BLE устройство";
+  }
+  return values.device || "Няма избрано USB устройство";
 }
 
 function selectedConnectionProfile() {
@@ -773,7 +857,8 @@ function renderConnectionProfiles(selectedId = "") {
   select.innerHTML = "";
   select.add(new Option("Ръчно въвеждане", ""));
   state.connectionProfiles.forEach((profile) => {
-    const transport = profile.transport === "tcp" ? "TCP" : "BLE";
+    const transport =
+      profile.transport === "tcp" ? "TCP" : profile.transport === "ble" ? "BLE" : "USB";
     select.add(new Option(`${profile.name} · ${transport}`, profile.id));
   });
   select.value = state.connectionProfiles.some((profile) => profile.id === activeId)
@@ -795,12 +880,18 @@ function applyConnectionProfile() {
   if (profile.transport === "tcp") {
     $("#tcpHost").value = profile.host;
     $("#tcpPort").value = profile.port;
-  } else {
+  } else if (profile.transport === "ble") {
     const select = $("#bleDevice");
     if (![...select.options].some((option) => option.value === profile.address)) {
       select.add(new Option(`${profile.name} — ${profile.address}`, profile.address));
     }
     select.value = profile.address;
+  } else {
+    const select = $("#serialDevice");
+    if (![...select.options].some((option) => option.value === profile.device)) {
+      select.add(new Option(`${profile.name} — ${profile.device}`, profile.device));
+    }
+    select.value = profile.device;
   }
   updateConnectionProfileUi();
 }
@@ -836,7 +927,9 @@ function openConnectionProfileModal() {
     profile?.name ||
     (values.transport === "tcp"
       ? values.host
-      : $("#bleDevice").selectedOptions[0]?.text || "");
+      : values.transport === "ble"
+        ? $("#bleDevice").selectedOptions[0]?.text || ""
+        : $("#serialDevice").selectedOptions[0]?.text || "");
   $("#connectionProfileAutoReconnect").checked = Boolean(profile?.auto_reconnect);
   $("#connectionProfileModal").classList.remove("hidden");
   setTimeout(() => $("#connectionProfileName").focus(), 50);
@@ -4298,10 +4391,12 @@ $("#connectionProfileModal").addEventListener("click", (event) => {
 $("#discoverTcpButton").addEventListener("click", discoverTcpDevices);
 $("#useDiscoveredTcp").addEventListener("click", useDiscoveredTcpDevice);
 $("#tcpDiscoveredDevice").addEventListener("change", renderTcpDiscoveryDetails);
-["#tcpHost", "#tcpPort", "#bleDevice"].forEach((selector) => {
+["#tcpHost", "#tcpPort", "#bleDevice", "#serialDevice"].forEach((selector) => {
   $(selector).addEventListener("input", markConnectionProfileDirty);
   $(selector).addEventListener("change", markConnectionProfileDirty);
 });
+$("#discoverSerialButton").addEventListener("click", discoverSerialDevices);
+$("#serialDevice").addEventListener("change", renderSerialDiscoveryDetails);
 $("#scanButton").addEventListener("click", scanBle);
 $("#pairButton").addEventListener("click", startPairing);
 $("#submitPin").addEventListener("click", submitPairingPin);

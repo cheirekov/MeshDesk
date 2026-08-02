@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import UTC, datetime
 
+import pytest
 from meshtastic.protobuf import (
     channel_pb2,
     localonly_pb2,
@@ -308,6 +309,48 @@ def test_connection_errors_are_classified_for_reconnect_policy():
         )
         == "identity_mismatch"
     )
+    assert (
+        MeshtasticManager._classify_connection_error(  # noqa: SLF001
+            PermissionError("Permission denied: /dev/ttyACM0"),
+            "serial",
+        )
+        == "permission_denied"
+    )
+    assert (
+        MeshtasticManager._classify_connection_error(  # noqa: SLF001
+            OSError("No such file or directory: /dev/ttyACM0"),
+            "serial",
+        )
+        == "device_not_found"
+    )
+
+
+def test_serial_connection_uses_common_profile_reconnect_lifecycle(monkeypatch):
+    manager = MeshtasticManager()
+    captured = {}
+
+    def start_connection(transport, target, **values):
+        captured.update(transport=transport, target=target, **values)
+
+    monkeypatch.setattr(manager, "_start_connection", start_connection)
+    manager.connect_serial(
+        "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+        auto_reconnect=True,
+        expected_device_id="!12345678",
+    )
+
+    assert captured == {
+        "transport": "serial",
+        "target": "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+        "auto_reconnect": True,
+        "expected_device_id": "!12345678",
+        "device": "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+    }
+
+    with pytest.raises(ValueError, match="explicit /dev path"):
+        manager.connect_serial("ttyACM0")
+    with pytest.raises(ValueError, match="explicit /dev path"):
+        manager.connect_serial("/dev/../etc/passwd")
 
 
 def test_auto_reconnect_waits_with_backoff_and_manual_disconnect_stops_it():

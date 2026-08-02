@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
 import threading
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from meshtastic.util import findPorts
+from serial.tools import list_ports
 from zeroconf import IPVersion, ServiceBrowser, ServiceListener, Zeroconf
 
 MESHTASTIC_SERVICE_TYPE = "_meshtastic._tcp.local."
@@ -103,3 +107,68 @@ class TcpDiscovery:
         finally:
             browser.cancel()
             zeroconf.close()
+
+
+class SerialDiscovery:
+    """Project pyserial/Meshtastic candidates as operator-friendly USB endpoints."""
+
+    def __init__(
+        self,
+        ports_factory: Callable[[], Iterable[Any]] | None = None,
+        candidate_factory: Callable[[], Iterable[str]] | None = None,
+        by_id_directory: Path | str = "/dev/serial/by-id",
+        access_checker: Callable[[str, int], bool] = os.access,
+    ) -> None:
+        self._ports_factory = ports_factory or list_ports.comports
+        self._candidate_factory = candidate_factory or (lambda: findPorts(True))
+        self._by_id_directory = Path(by_id_directory)
+        self._access_checker = access_checker
+
+    def _stable_paths(self) -> dict[str, str]:
+        try:
+            entries = list(self._by_id_directory.iterdir())
+        except OSError:
+            return {}
+        result = {}
+        for entry in entries:
+            try:
+                result[str(entry.resolve())] = str(entry)
+            except OSError:
+                continue
+        return result
+
+    @staticmethod
+    def _hex_identifier(value: Any) -> str | None:
+        return f"{int(value):04x}" if isinstance(value, int) else None
+
+    def discover(self) -> list[dict[str, Any]]:
+        ports = {str(port.device): port for port in self._ports_factory()}
+        stable_paths = self._stable_paths()
+        devices = []
+        for device in dict.fromkeys(str(path) for path in self._candidate_factory()):
+            port = ports.get(device)
+            stable_path = stable_paths.get(str(Path(device).resolve()))
+            connection_path = stable_path or device
+            accessible = self._access_checker(connection_path, os.R_OK | os.W_OK)
+            devices.append(
+                {
+                    "device": device,
+                    "connection_path": connection_path,
+                    "stable_path": stable_path,
+                    "description": getattr(port, "description", None) or "USB Serial device",
+                    "manufacturer": getattr(port, "manufacturer", None),
+                    "product": getattr(port, "product", None),
+                    "serial_number": getattr(port, "serial_number", None),
+                    "vid": self._hex_identifier(getattr(port, "vid", None)),
+                    "pid": self._hex_identifier(getattr(port, "pid", None)),
+                    "location": getattr(port, "location", None),
+                    "hwid": getattr(port, "hwid", None),
+                    "accessible": accessible,
+                    "permission_hint": (
+                        None
+                        if accessible
+                        else "Нужен е read/write достъп до порта (обикновено група dialout)."
+                    ),
+                }
+            )
+        return sorted(devices, key=lambda item: (not item["accessible"], item["device"]))

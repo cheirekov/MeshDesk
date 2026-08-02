@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>MeshDesk</title>
-    <link rel="stylesheet" href="/style.css?v=20260731-config-metrics">
+    <link rel="stylesheet" href="/style.css?v=20260802-serial1">
   </head>
   <body>
     <header>
@@ -97,6 +97,7 @@
         <div class="tabs" role="tablist">
           <button class="tab active" data-transport="tcp">TCP / Wi-Fi</button>
           <button class="tab" data-transport="ble">Bluetooth LE</button>
+          <button class="tab" data-transport="serial">USB Serial</button>
         </div>
 
         <form id="connectForm">
@@ -136,6 +137,21 @@
             </label>
             <button id="scanButton" type="button" class="secondary">Сканирай</button>
             <button id="pairButton" type="button" class="secondary">Сдвои</button>
+          </div>
+
+          <div id="serialFields" class="serial-fields hidden">
+            <div class="field-row">
+              <label class="grow">
+                Meshtastic USB устройство
+                <select id="serialDevice">
+                  <option value="">Натисни „Открий USB“</option>
+                </select>
+              </label>
+              <button id="discoverSerialButton" type="button" class="secondary">
+                Открий USB
+              </button>
+            </div>
+            <div id="serialDiscoveryDetails" class="tcp-discovery-details hidden"></div>
           </div>
 
           <div id="pairingBox" class="pairing-box hidden">
@@ -661,6 +677,6 @@
 
     <div id="toast" role="status" aria-live="polite"></div>
     <div id="helpTooltip" class="help-tooltip hidden" role="tooltip"></div>
-    <script src="/app.js?v=20260731-reconnect1"></script>
+    <script src="/app.js?v=20260802-serial1"></script>
   </body>
 </html>

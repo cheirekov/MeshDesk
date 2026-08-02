@@ -1,7 +1,7 @@
 [project]
 name = "meshdesk"
 version = "0.1.0"
-description = "Local Linux UI for Meshtastic devices over native TCP or Bluetooth LE"
+description = "Local Linux UI for Meshtastic devices over TCP, Bluetooth LE or USB Serial"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

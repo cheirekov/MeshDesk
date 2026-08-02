@@ -7,8 +7,10 @@
 
 - [Implementation roadmap](ROADMAP.md) — подредени етапи и критерии за
   завършеност.
-- [Connection profiles](CONNECTION-PROFILES.md) — локално запазени TCP/BLE
+- [Connection profiles](CONNECTION-PROFILES.md) — локално запазени TCP/BLE/USB
   endpoints, identity binding и opt-in auto-reconnect.
+- [USB Serial connection](SERIAL-CONNECTION.md) — discovery, stable device path,
+  Linux permissions и ограничено Docker device mapping.
 - [TCP mDNS discovery](TCP-DISCOVERY.md) — откриване на
   `_meshtastic._tcp.local.` без системни пакети.
 - [Connection health](CONNECTION-HEALTH.md) — lifecycle states, timestamps и

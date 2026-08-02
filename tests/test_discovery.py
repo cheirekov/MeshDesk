@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from meshdesk.discovery import (
     MESHTASTIC_SERVICE_TYPE,
+    SerialDiscovery,
     TcpDiscovery,
     _MeshtasticListener,
     _neighbor_macs,
@@ -78,3 +81,64 @@ def test_neighbor_mac_parser_ignores_incomplete_entries(tmp_path):
     )
 
     assert _neighbor_macs(table) == {"172.16.19.176": "aa:bb:cc:dd:ee:ff"}
+
+
+def test_serial_discovery_prefers_stable_by_id_path(tmp_path):
+    device = tmp_path / "dev" / "ttyACM0"
+    device.parent.mkdir()
+    device.touch()
+    by_id = tmp_path / "by-id"
+    by_id.mkdir()
+    stable = by_id / "usb-Meshtastic_ABC-if00"
+    stable.symlink_to(device)
+    port = SimpleNamespace(
+        device=str(device),
+        description="Meshtastic CDC",
+        manufacturer="Meshtastic",
+        product="T-Beam",
+        serial_number="ABC",
+        vid=0x303A,
+        pid=0x1001,
+        location="1-2",
+        hwid="USB VID:PID=303A:1001",
+    )
+
+    devices = SerialDiscovery(
+        ports_factory=lambda: [port],
+        candidate_factory=lambda: [str(device)],
+        by_id_directory=by_id,
+        access_checker=lambda _path, _mode: True,
+    ).discover()
+
+    assert devices[0]["device"] == str(device)
+    assert devices[0]["connection_path"] == str(stable)
+    assert devices[0]["stable_path"] == str(stable)
+    assert devices[0]["vid"] == "303a"
+    assert devices[0]["pid"] == "1001"
+    assert devices[0]["accessible"] is True
+
+
+def test_serial_discovery_reports_missing_permissions(tmp_path):
+    device = "/dev/ttyUSB9"
+    port = SimpleNamespace(
+        device=device,
+        description="USB UART",
+        manufacturer=None,
+        product=None,
+        serial_number=None,
+        vid=0x10C4,
+        pid=0xEA60,
+        location=None,
+        hwid="USB VID:PID=10C4:EA60",
+    )
+
+    result = SerialDiscovery(
+        ports_factory=lambda: [port],
+        candidate_factory=lambda: [device],
+        by_id_directory=tmp_path / "missing",
+        access_checker=lambda _path, _mode: False,
+    ).discover()[0]
+
+    assert result["connection_path"] == device
+    assert result["accessible"] is False
+    assert "dialout" in result["permission_hint"]

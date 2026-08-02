@@ -111,6 +111,7 @@ button:disabled { opacity: 0.38; cursor: not-allowed; }
   color: #fff1f1;
 }
 .danger-outline { background: transparent; color: #ff9b9b; }
+.danger-text { color: var(--red); }
 
 .status {
   display: flex;

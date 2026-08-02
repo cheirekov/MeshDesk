@@ -9,7 +9,7 @@ import time
 import uuid
 from collections import deque
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from google.protobuf.json_format import MessageToDict, ParseDict
@@ -315,6 +315,33 @@ class MeshtasticManager:
             address=address,
         )
 
+    def connect_serial(
+        self,
+        device: str,
+        *,
+        auto_reconnect: bool = False,
+        expected_device_id: str | None = None,
+    ) -> None:
+        device = device.strip()
+        if not device:
+            raise ValueError("Choose a USB Serial device first")
+        path = PurePosixPath(device)
+        if (
+            not path.is_absolute()
+            or path.parts[:2] != ("/", "dev")
+            or len(path.parts) < 3
+            or ".." in path.parts
+            or len(device) > 255
+        ):
+            raise ValueError("Serial device must be an explicit /dev path")
+        self._start_connection(
+            "serial",
+            device,
+            auto_reconnect=auto_reconnect,
+            expected_device_id=expected_device_id,
+            device=device,
+        )
+
     def _start_connection(
         self,
         transport: str,
@@ -410,6 +437,13 @@ class MeshtasticManager:
                 interface = TCPInterface(
                     hostname=params["host"],
                     portNumber=params["port"],
+                    timeout=45,
+                )
+            elif transport == "serial":
+                from meshtastic.serial_interface import SerialInterface
+
+                interface = SerialInterface(
+                    devPath=params["device"],
                     timeout=45,
                 )
             else:
@@ -524,7 +558,14 @@ class MeshtasticManager:
             return "timeout"
         if "refused" in message:
             return "connection_refused"
-        if "not found" in message or "no meshtastic ble peripheral" in message:
+        if "permission denied" in message or "access is denied" in message:
+            return "permission_denied"
+        if (
+            "not found" in message
+            or "no such file" in message
+            or "cannot find" in message
+            or "no meshtastic ble peripheral" in message
+        ):
             return "device_not_found"
         if transport == "ble" and (
             "authentication" in message

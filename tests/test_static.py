@@ -46,6 +46,9 @@ def test_saved_connection_profiles_are_available_in_connection_panel() -> None:
     assert 'id="discoverTcpButton"' in page.text
     assert 'id="tcpDiscoveryResults"' in page.text
     assert 'id="tcpDiscoveryDetails"' in page.text
+    assert 'data-transport="serial"' in page.text
+    assert 'id="serialDevice"' in page.text
+    assert 'id="discoverSerialButton"' in page.text
     assert "refreshConnectionProfiles()" in script.text
     assert "verifySelectedConnectionProfile(status)" in script.text
     assert "updateConnectionHealth(status)" in script.text
@@ -58,6 +61,8 @@ def test_saved_connection_profiles_are_available_in_connection_panel() -> None:
     assert "Admin session</small><strong>подновена" in script.text
     assert "discoverTcpDevices" in script.text
     assert "matchingProfileForDiscoveredDevice" in script.text
+    assert "discoverSerialDevices" in script.text
+    assert "renderSerialDiscoveryDetails" in script.text
 
 
 def test_configuration_has_contextual_guidance() -> None:

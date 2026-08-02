@@ -6,7 +6,7 @@ import re
 import threading
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -47,6 +47,7 @@ class ConnectionProfileStore:
         transport = str(values.get("transport") or "").strip().lower()
         host = str(values.get("host") or "").strip()
         address = str(values.get("address") or "").strip()
+        device = str(values.get("device") or "").strip()
         auto_reconnect = bool(values.get("auto_reconnect", False))
         try:
             port = int(values.get("port", 4403))
@@ -57,14 +58,24 @@ class ConnectionProfileStore:
             raise ValueError("Profile name is required")
         if len(name) > 80:
             raise ValueError("Profile name must be at most 80 characters")
-        if transport not in {"tcp", "ble"}:
-            raise ValueError("Transport must be tcp or ble")
+        if transport not in {"tcp", "ble", "serial"}:
+            raise ValueError("Transport must be tcp, ble or serial")
         if not 1 <= port <= 65535:
             raise ValueError("Port must be between 1 and 65535")
         if transport == "tcp" and not host:
             raise ValueError("TCP host is required")
         if transport == "ble" and not address:
             raise ValueError("Bluetooth address is required")
+        if transport == "serial":
+            device_path = PurePosixPath(device)
+            if (
+                not device_path.is_absolute()
+                or device_path.parts[:2] != ("/", "dev")
+                or len(device_path.parts) < 3
+                or ".." in device_path.parts
+                or len(device) > 255
+            ):
+                raise ValueError("Serial device must be an explicit /dev path")
 
         return {
             "name": name,
@@ -72,6 +83,7 @@ class ConnectionProfileStore:
             "host": host if transport == "tcp" else "",
             "port": port if transport == "tcp" else 4403,
             "address": address if transport == "ble" else "",
+            "device": device if transport == "serial" else "",
             "auto_reconnect": auto_reconnect,
         }
 

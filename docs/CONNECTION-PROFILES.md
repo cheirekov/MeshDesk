@@ -6,8 +6,8 @@ Connection profiles са основата на M1 connection lifecycle. Те н�
 ## Какво се пази
 
 - операторско име;
-- transport: TCP или BLE;
-- TCP host и port, или BLE address;
+- transport: TCP, BLE или USB Serial;
+- TCP host и port, BLE address или explicit Serial `/dev` path;
 - време на създаване, промяна и последно използване.
 - потвърден Meshtastic node ID, име и време на последната identity проверка.
 - explicit `auto_reconnect` opt-in.
@@ -41,7 +41,7 @@ lifecycle, а не към firmware конфигурацията на радио�
 ## Reconnect policy
 
 При `connection_lost`, timeout, отказан TCP endpoint, липсваща BLE реклама или
-друга временна transport грешка се използва `5, 10, 20, 40, 60 s` backoff.
+временно липсващ Serial device се използва `5, 10, 20, 40, 60 s` backoff.
 След десет секунди стабилна сесия failure counter-ът се нулира. За BLE всеки
 автоматичен опит прави fresh scan и само един GATT/handshake цикъл; следващият
 се управлява от общия backoff.
@@ -53,6 +53,7 @@ BLE transport state се наблюдава локално през BlueZ/Bleak.
 Loop-ът се блокира при:
 
 - `pairing_required`;
+- `permission_denied` за Serial device;
 - identity mismatch спрямо потвърдения node ID;
 - ръчно **Прекъсни** или endpoint switch.
 

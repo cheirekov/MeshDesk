@@ -22,7 +22,7 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 
 ## M1 — Connection reliability
 
-- [ ] USB Serial транспорт без системно инсталиране на Python пакети.
+- [x] USB Serial discovery и transport без системно инсталиране на Python пакети.
 - [x] mDNS discovery за `_meshtastic._tcp` без системни пакети.
 - [x] Именувани connection profiles с локално persistence и last-used metadata.
 - [x] Verified device identity след handshake, mismatch защита и explicit rebind.

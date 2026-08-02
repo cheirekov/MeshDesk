@@ -8,7 +8,7 @@ MeshDesk разделя transport състоянието от радио акт�
 | State | Значение |
 |---|---|
 | `idle` | Няма започвана или запазена сесия |
-| `connecting` | TCP/BLE transport и Meshtastic handshake се установяват |
+| `connecting` | TCP/BLE/Serial transport и Meshtastic handshake се установяват |
 | `reconnecting` | Автоматичен reconnect опит и handshake |
 | `healthy` | Клиентската transport сесия е активна |
 | `lost` | Активна сесия е прекъсната неочаквано |
@@ -21,7 +21,7 @@ Backend-ът пази отделни codes за:
 
 - `manual` и `switch`;
 - `timeout` и `connection_refused`;
-- `device_not_found`, `pairing_required` и `identity_mismatch`;
+- `device_not_found`, `pairing_required`, `permission_denied` и `identity_mismatch`;
 - `connection_failed` и `connection_lost`.
 
 Само временните transport грешки са маркирани като `reconnect_eligible`.
@@ -65,5 +65,5 @@ Health payload съдържа:
 ## Ограничение
 
 MeshDesk не изпраща периодични LoRa пакети само за health проверка. Това би
-увеличило airtime и не би било коректен тест на локалния TCP/BLE transport.
+увеличило airtime и не би било коректен тест на локалния TCP/BLE/Serial transport.
 Загубата се отчита от самия interface, а тихата mesh мрежа остава `healthy`.

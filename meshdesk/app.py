@@ -13,26 +13,28 @@ from meshdesk.connection_profiles import (
     ConnectionIdentityMismatchError,
     ConnectionProfileStore,
 )
-from meshdesk.discovery import TcpDiscovery
+from meshdesk.discovery import SerialDiscovery, TcpDiscovery
 from meshdesk.manager import MeshtasticManager, RequestCooldownError
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
 class ConnectRequest(BaseModel):
-    transport: Literal["tcp", "ble"]
+    transport: Literal["tcp", "ble", "serial"]
     host: str = "172.16.19.176"
     port: int = Field(default=4403, ge=1, le=65535)
     address: str = ""
+    device: str = ""
     connection_profile_id: str | None = None
 
 
 class ConnectionProfileRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    transport: Literal["tcp", "ble"]
+    transport: Literal["tcp", "ble", "serial"]
     host: str = ""
     port: int = Field(default=4403, ge=1, le=65535)
     address: str = ""
+    device: str = ""
     auto_reconnect: bool = False
 
 
@@ -132,10 +134,12 @@ def create_app(
     manager: MeshtasticManager | None = None,
     connection_profiles: ConnectionProfileStore | None = None,
     tcp_discovery: TcpDiscovery | None = None,
+    serial_discovery: SerialDiscovery | None = None,
 ) -> FastAPI:
     radio = manager or MeshtasticManager()
     profiles = connection_profiles or ConnectionProfileStore()
     discovery = tcp_discovery or TcpDiscovery()
+    usb_discovery = serial_discovery or SerialDiscovery()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -147,7 +151,7 @@ def create_app(
     api = FastAPI(
         title="MeshDesk",
         version=__version__,
-        description="Local Linux Meshtastic UI over native TCP and Bluetooth LE",
+        description="Local Linux Meshtastic UI over TCP, Bluetooth LE and USB Serial",
         lifespan=lifespan,
     )
     api.state.radio = radio
@@ -196,6 +200,16 @@ def create_app(
                 detail=f"mDNS discovery is unavailable: {exc}",
             ) from exc
 
+    @api.get("/api/discovery/serial")
+    def discover_serial() -> dict:
+        try:
+            return {"devices": usb_discovery.discover()}
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"USB Serial discovery is unavailable: {exc}",
+            ) from exc
+
     @api.post("/api/connection-profiles", status_code=201)
     def create_connection_profile(request: ConnectionProfileRequest) -> dict:
         try:
@@ -239,14 +253,16 @@ def create_app(
                 f"{profile['host']}:{profile['port']}"
                 if profile["transport"] == "tcp"
                 else profile["address"]
+                if profile["transport"] == "ble"
+                else profile["device"]
             )
             actual_target = str(current.get("target") or "")
             target_matches = (
                 current.get("transport") == profile["transport"]
                 and (
-                    actual_target == expected_target
-                    if profile["transport"] == "tcp"
-                    else actual_target.casefold() == expected_target.casefold()
+                    actual_target.casefold() == expected_target.casefold()
+                    if profile["transport"] == "ble"
+                    else actual_target == expected_target
                 )
             )
             if not target_matches:
@@ -296,6 +312,10 @@ def create_app(
                             request.transport == "ble"
                             and profile["address"] == request.address.strip()
                         )
+                        or (
+                            request.transport == "serial"
+                            and profile["device"] == request.device.strip()
+                        )
                     )
                 )
                 if not endpoint_matches:
@@ -310,9 +330,15 @@ def create_app(
                     auto_reconnect=bool(profile and profile.get("auto_reconnect")),
                     expected_device_id=profile.get("device_id") if profile else None,
                 )
-            else:
+            elif request.transport == "ble":
                 radio.connect_ble(
                     request.address,
+                    auto_reconnect=bool(profile and profile.get("auto_reconnect")),
+                    expected_device_id=profile.get("device_id") if profile else None,
+                )
+            else:
+                radio.connect_serial(
+                    request.device,
                     auto_reconnect=bool(profile and profile.get("auto_reconnect")),
                     expected_device_id=profile.get("device_id") if profile else None,
                 )

@@ -93,6 +93,30 @@ def test_connection_profiles_do_not_accept_incomplete_endpoints(tmp_path):
         store.create({"name": "Broken", "transport": "tcp", "host": ""})
     with pytest.raises(ValueError, match="Bluetooth address"):
         store.create({"name": "Broken", "transport": "ble", "address": ""})
+    with pytest.raises(ValueError, match="Serial device"):
+        store.create({"name": "Broken", "transport": "serial", "device": "ttyACM0"})
+    with pytest.raises(ValueError, match="Serial device"):
+        store.create(
+            {"name": "Broken", "transport": "serial", "device": "/dev/../etc/passwd"}
+        )
+
+
+def test_serial_connection_profile_keeps_explicit_device_path(tmp_path):
+    store = ConnectionProfileStore(tmp_path / "profiles.json")
+
+    profile = store.create(
+        {
+            "name": "USB база",
+            "transport": "serial",
+            "device": "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
+            "auto_reconnect": True,
+        }
+    )
+
+    assert profile["transport"] == "serial"
+    assert profile["device"] == "/dev/serial/by-id/usb-Meshtastic_ABC-if00"
+    assert profile["host"] == ""
+    assert profile["address"] == ""
 
 
 def test_connection_profile_file_is_versioned(tmp_path):
