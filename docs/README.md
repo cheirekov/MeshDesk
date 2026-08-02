@@ -15,6 +15,8 @@
   `_meshtastic._tcp.local.` без системни пакети.
 - [Connection health](CONNECTION-HEALTH.md) — lifecycle states, timestamps и
   reconnect state machine, backoff и liveness.
+- [Capability preflight](CAPABILITY-PREFLIGHT.md) — DeviceMetadata inventory,
+  remote проверка и правилото кога операция се блокира.
 - [UI information architecture](UX-STRUCTURE.md) — правила за подреждане на
   основни, вторични и бъдещи fleet секции.
 - [Android/Desktop parity backlog](ANDROID-PARITY-BACKLOG.md) — пълната опашка

@@ -1110,6 +1110,7 @@ function updateControls(status) {
   }
   $("#localPublicKey").textContent = status.public_key || "—";
   updateConnectionHealth(status);
+  renderAdminCapabilities();
   applyRequestCooldowns();
   updateChatQueueIndicator();
   updateByteCount();
@@ -1837,6 +1838,91 @@ function updateAdminTarget() {
   $("#preserveNodePreferencesHint").textContent = remote
     ? "Remote NodeDB не може да бъде прочетена предварително; запазването не е достъпно."
     : "MeshDesk ще запише текущите favorite/ignore флагове и ще ги приложи отново.";
+  renderAdminCapabilities();
+}
+
+function selectedAdminCapabilities() {
+  const nodeId = $("#adminTarget").value;
+  const inventory = state.status?.capabilities || {};
+  return nodeId ? inventory.remote?.[nodeId.toLowerCase()] : inventory.local;
+}
+
+function renderAdminCapabilities() {
+  const card = $("#adminCapabilityCard");
+  if (!card) return;
+  const nodeId = $("#adminTarget").value || null;
+  const capabilities = selectedAdminCapabilities();
+  const known = capabilities?.status === "known";
+  card.className = `capability-card ${known ? "known" : "unknown"}`;
+  $("#adminCapabilityTitle").textContent = known
+    ? `${capabilities.hardware_model || "Unknown hardware"} · firmware ${
+        capabilities.firmware_version || "неизвестен"
+      }`
+    : "Възможностите не са проверени";
+  $("#adminCapabilityDetail").textContent = known
+    ? `${capabilities.node_id} · role ${capabilities.role || "unknown"} · metadata source: ${
+        capabilities.source
+      }`
+    : nodeId
+      ? "Изпрати една PKI admin metadata заявка преди чувствителна remote операция."
+      : capabilities?.reason || "Локалното радио не предостави DeviceMetadata.";
+  const features = capabilities?.features || {};
+  $("#adminCapabilityFeatures").innerHTML = known
+    ? Object.values(features)
+        .map(
+          (feature) =>
+            `<span class="capability-chip ${feature.state}">${escapeHtml(
+              feature.label,
+            )}: ${feature.supported ? "да" : "не"}</span>`,
+        )
+        .join("")
+    : '<span class="capability-chip unknown">unknown · без предположения</span>';
+  $("#refreshCapabilities").disabled = state.connection !== "connected";
+
+  const pkcUnsupported = Boolean(
+    nodeId && known && features.pkc?.state === "unsupported",
+  );
+  document.querySelectorAll(".admin-action").forEach((button) => {
+    const shutdownUnsupported =
+      button.dataset.adminAction === "shutdown" &&
+      known &&
+      features.shutdown?.state === "unsupported";
+    button.disabled =
+      state.connection !== "connected" || pkcUnsupported || shutdownUnsupported;
+    if (pkcUnsupported) {
+      button.title = "Remote metadata reports that PKC is unavailable";
+    } else if (shutdownUnsupported) {
+      button.title = "Device metadata reports that software shutdown is unsupported";
+    } else {
+      button.removeAttribute("title");
+    }
+  });
+}
+
+async function refreshCapabilities() {
+  const button = $("#refreshCapabilities");
+  const nodeId = $("#adminTarget").value || null;
+  button.disabled = true;
+  const previous = button.textContent;
+  button.textContent = "Проверка…";
+  try {
+    const result = await api("/api/capabilities/refresh", {
+      method: "POST",
+      body: JSON.stringify({ node_id: nodeId }),
+    });
+    if (nodeId) {
+      toast(`Metadata заявката към ${nodeId} е изпратена`);
+    } else {
+      state.status.capabilities.local = result;
+      renderAdminCapabilities();
+      toast("Локалните firmware възможности са потвърдени");
+    }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.textContent = previous;
+    button.disabled = state.connection !== "connected";
+  }
 }
 
 function renderNodes(nodes) {
@@ -2400,6 +2486,7 @@ function routeHtml(route) {
 }
 
 function operationLabel(event) {
+  if (event.operation === "capabilities") return "Firmware и възможности";
   if (event.operation === "traceroute") return "Traceroute";
   if (event.operation === "position") return "Position";
   if (event.operation === "user_info") return "User Info";
@@ -2438,7 +2525,9 @@ function operationResultHtml(event) {
   let body = "";
   if (event.kind === "operation_request") {
     body =
-      event.operation === "history_replay"
+      event.operation === "capabilities"
+        ? "<p>Изпратена е PKI admin заявка за DeviceMetadata.</p>"
+        : event.operation === "history_replay"
         ? `<p>Поискани до ${escapeHtml(event.max_messages)} съобщения за ${
             escapeHtml(event.window)
           } минути · marker ${escapeHtml(event.last_request)}</p>`
@@ -2449,6 +2538,30 @@ function operationResultHtml(event) {
             )} · hop limit ${escapeHtml(event.hop_limit)}</p>`;
   } else if (!event.success) {
     body = `<p>${escapeHtml(event.error || "Няма отговор от възела")}</p>`;
+  } else if (event.operation === "capabilities") {
+    const capabilities = event.result?.capabilities || {};
+    const features = Object.values(capabilities.features || {});
+    const supported = features.filter((feature) => feature.supported).length;
+    const unsupported = features.filter((feature) => !feature.supported).length;
+    body = `<p>DeviceMetadata е получена и ще се използва за preflight.</p>
+      <div class="operation-meta">
+        <span><small>Firmware</small><strong>${escapeHtml(
+          capabilities.firmware_version || "неизвестен",
+        )}</strong></span>
+        <span><small>Hardware</small><strong>${escapeHtml(
+          capabilities.hardware_model || "неизвестен",
+        )}</strong></span>
+        <span><small>Role</small><strong>${escapeHtml(
+          capabilities.role || "неизвестна",
+        )}</strong></span>
+        <span><small>Feature flags</small><strong>${escapeHtml(
+          `${supported} налични · ${unsupported} липсват`,
+        )}</strong></span>
+      </div>
+      <details class="raw-details">
+        <summary>DeviceMetadata details</summary>
+        <pre>${escapeHtml(JSON.stringify(capabilities, null, 2))}</pre>
+      </details>`;
   } else if (event.operation === "traceroute") {
     body = `
       <p>Маршрут към възела</p>
@@ -3809,17 +3922,32 @@ function selectConfigSection(name) {
   }
   const kindLabel =
     section.kind === "owner" ? "USER" : section.kind === "radio" ? "RADIO" : "MODULE";
+  const capability = section.capability || { state: "unknown" };
+  const unsupported = capability.state === "unsupported";
+  const capabilityNotice = unsupported
+    ? `<div class="config-capability-notice unsupported"><strong>Неподдържана секция</strong><p>${escapeHtml(
+        capability.reason || "DeviceMetadata reports this section as unavailable.",
+      )}</p></div>`
+    : capability.state === "unknown"
+      ? '<div class="config-capability-notice unknown"><strong>Capability: unknown</strong><p>Firmware metadata не позволява сигурен извод. MeshDesk няма да представя това като потвърдена поддръжка.</p></div>'
+      : "";
   form.className = "config-form";
   form.innerHTML = `
     <div class="config-form-title">
       <div><span>${kindLabel}</span>
       <h3>${escapeHtml(section.label)}</h3></div>
-      <button type="submit" class="primary">Запиши секцията</button>
+      <button type="submit" class="primary" ${unsupported ? "disabled" : ""}>Запиши секцията</button>
     </div>
+    ${capabilityNotice}
     <div id="configGuidance" class="config-guidance hidden"></div>
     <div class="config-fields">${section.fields
       .map((field) => fieldControl(section.name, field))
       .join("")}</div>`;
+  if (unsupported) {
+    form.querySelectorAll("input, select").forEach((control) => {
+      control.disabled = true;
+    });
+  }
   renderConfigGuidance(section);
   initHelpTips(form);
   if (section.name === "device") {
@@ -3843,13 +3971,21 @@ function renderConfig(sections) {
   nav.innerHTML = sections
     .map(
       (section) =>
-        `<button type="button" class="config-section" data-section="${escapeHtml(
+        `<button type="button" class="config-section ${escapeHtml(
+          section.capability?.state || "unknown"
+        )}" data-section="${escapeHtml(
           section.name,
         )}"><span>${
           section.kind === "owner" ? "U" : section.kind === "radio" ? "R" : "M"
         }</span>${escapeHtml(
           section.label,
-        )}</button>`,
+        )}${
+          section.capability?.state === "unsupported"
+            ? '<small title="Неподдържано от firmware">×</small>'
+            : section.capability?.state === "unknown"
+              ? '<small title="Capability unknown">?</small>'
+              : ""
+        }</button>`,
     )
     .join("");
   nav.querySelectorAll(".config-section").forEach((button) =>
@@ -4480,6 +4616,7 @@ $("#configTarget").addEventListener("change", async () => {
   await refreshConfig();
 });
 $("#adminTarget").addEventListener("change", updateAdminTarget);
+$("#refreshCapabilities").addEventListener("click", refreshCapabilities);
 document.querySelectorAll(".admin-action").forEach((button) => {
   button.addEventListener("click", () => runAdminAction(button.dataset.adminAction));
 });

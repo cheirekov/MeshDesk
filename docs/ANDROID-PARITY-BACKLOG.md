@@ -63,7 +63,7 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 | NODE-05 | P2 | Distance/channel/favorite sorting | position normalization | queued |
 | NODE-06 | P2 | Nodes-per-hop histogram | time-window query | queued |
 | NODE-07 | P1 | PKI lock/mismatch/trust indicators | public-key history | queued |
-| NODE-08 | P2 | Device metadata, firmware и capabilities | metadata request/cache | queued |
+| NODE-08 | P2 | Device metadata, firmware и capabilities | metadata request/cache | **started** — session inventory за local и remote-admin target |
 | NODE-09 | P2 | Hardware/product links | maintained upstream catalog | queued |
 | NODE-10 | P1 | Explicit remote favorite/ignore с ACK/NAK/timeout | PKI admin | **completed** |
 
@@ -100,7 +100,7 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 |---|---|---|---|---|
 | CFG-01 | P1 | Contextual configuration help | guidance registry | **completed** |
 | CFG-02 | P1 | Specialized forms, units и validation | schema metadata | **started** — общ descriptor metadata + curated firmware limits/units |
-| CFG-03 | P1 | Firmware/capability-aware visibility | NODE-08 | queued |
+| CFG-03 | P1 | Firmware/capability-aware visibility | NODE-08 | **started** — section/action preflight без version guessing |
 | CFG-04 | P2 | Region/preset compatibility advisor | capability + regulatory data | queued |
 | CFG-05 | P2 | Encrypted security key backup/restore | explicit threat model | queued |
 | CFG-06 | P2 | Protection level и identity-change warnings | firmware capability | queued |

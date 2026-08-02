@@ -1501,6 +1501,39 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   line-height: 1.45;
   text-align: right;
 }
+.capability-card {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(280px, 1.5fr) auto;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid #5c4a24;
+  border-radius: 11px;
+  background: rgba(80, 59, 17, 0.2);
+}
+.capability-card.known { border-color: #355344; background: rgba(20, 45, 36, 0.42); }
+.capability-kicker {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--amber);
+  font: 700 0.58rem ui-monospace, monospace;
+  letter-spacing: 0.1em;
+}
+.capability-card.known .capability-kicker { color: var(--green); }
+.capability-card strong { font-size: 0.77rem; }
+.capability-card p { margin-top: 4px; color: var(--muted); font-size: 0.66rem; line-height: 1.4; }
+.capability-features { display: flex; flex-wrap: wrap; gap: 5px; }
+.capability-chip {
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font: 600 0.6rem ui-monospace, monospace;
+}
+.capability-chip.supported { border-color: #365a3d; color: #bce899; }
+.capability-chip.unsupported { border-color: #6b3838; color: #ff9b9b; }
+.capability-chip.unknown { border-color: #66512b; color: #d7bc7b; }
 .admin-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1701,6 +1734,9 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 }
 .config-section.active { color: var(--text); background: #172822; }
 .config-section.active span { color: var(--green); background: var(--green-dark); }
+.config-section > small { margin-left: auto; color: var(--amber); font-weight: 800; }
+.config-section.unsupported { color: #a97878; }
+.config-section.unsupported > small { color: var(--red); }
 .config-form { padding: 20px; min-width: 0; }
 .config-form-title {
   display: flex;
@@ -1715,6 +1751,16 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   letter-spacing: 0.14em;
 }
 .config-form-title h3 { margin: 3px 0 0; font-size: 1.1rem; }
+.config-capability-notice {
+  margin: -7px 0 16px;
+  padding: 10px 12px;
+  border: 1px solid #66512b;
+  border-radius: 9px;
+  background: rgba(72, 53, 17, 0.24);
+}
+.config-capability-notice.unsupported { border-color: #6b3838; background: rgba(82, 29, 29, 0.24); }
+.config-capability-notice strong { font-size: 0.7rem; }
+.config-capability-notice p { margin-top: 4px; color: var(--muted); font-size: 0.65rem; }
 .config-field-label {
   display: inline-flex;
   align-items: center;
@@ -1780,6 +1826,7 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   .remote-config-controls { grid-template-columns: 1fr 1fr; }
   .remote-config-controls > button { align-self: end; }
   .admin-toolbar { align-items: stretch; flex-direction: column; }
+  .capability-card { grid-template-columns: 1fr; }
   .admin-target-hint { text-align: left; }
   .pairing-box { grid-template-columns: 1fr; }
   .forget-option { grid-column: 1; }

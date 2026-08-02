@@ -4,10 +4,13 @@ import json
 import threading
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from meshtastic.protobuf import (
+    admin_pb2,
     channel_pb2,
+    config_pb2,
     localonly_pb2,
     mesh_pb2,
     portnums_pb2,
@@ -17,6 +20,7 @@ from meshtastic.util import to_node_num
 
 from meshdesk.history import EncryptedHistory
 from meshdesk.manager import (
+    CapabilityUnsupportedError,
     DeviceIdentityMismatchError,
     MeshtasticManager,
     RequestCooldownError,
@@ -36,6 +40,7 @@ class FakeLocalNode:
         self.admin_responses = []
         self.ack_callback_names = []
         self.session_refreshes = 0
+        self.admin_metadata_responses = []
 
     def onAckNak(self, _packet):
         pass
@@ -101,6 +106,12 @@ class FakeLocalNode:
         self.written.append(("reset_nodedb",))
         return {"id": 93}
 
+    def _sendAdmin(self, message, *, wantResponse, onResponse):
+        self.written.append(("metadata", message.get_device_metadata_request))
+        response = self.admin_metadata_responses.pop(0)
+        onResponse(response)
+        return {"id": 94}
+
 
 class FakeInterface:
     def __init__(self) -> None:
@@ -131,6 +142,7 @@ class FakeInterface:
         self.get_node_requests = []
         self.ack_waits = 0
         self.ack_wait_error = None
+        self._acknowledgment = SimpleNamespace(receivedAck=False, receivedNak=False)
 
     def getMyNodeInfo(self):
         return next(iter(self.nodes.values()))
@@ -351,6 +363,143 @@ def test_serial_connection_uses_common_profile_reconnect_lifecycle(monkeypatch):
         manager.connect_serial("ttyACM0")
     with pytest.raises(ValueError, match="explicit /dev path"):
         manager.connect_serial("/dev/../etc/passwd")
+
+
+def test_device_metadata_is_projected_as_honest_capability_inventory():
+    metadata = mesh_pb2.DeviceMetadata(
+        firmware_version="2.7.8",
+        device_state_version=22,
+        canShutdown=False,
+        hasWifi=True,
+        hasBluetooth=True,
+        hasEthernet=False,
+        hasRemoteHardware=False,
+        hasPKC=True,
+        role=config_pb2.Config.DeviceConfig.Role.CLIENT,
+        hw_model=mesh_pb2.HardwareModel.TBEAM,
+        excluded_modules=(
+            mesh_pb2.ExcludedModules.STOREFORWARD_CONFIG
+            | mesh_pb2.ExcludedModules.SERIAL_CONFIG
+        ),
+    )
+
+    capabilities = MeshtasticManager._project_capabilities(  # noqa: SLF001
+        metadata,
+        "!12345678",
+        "handshake",
+    )
+
+    assert capabilities["status"] == "known"
+    assert capabilities["firmware_version"] == "2.7.8"
+    assert capabilities["hardware_model"] == "TBEAM"
+    assert capabilities["role"] == "CLIENT"
+    assert capabilities["features"]["wifi"]["state"] == "supported"
+    assert capabilities["features"]["shutdown"]["state"] == "unsupported"
+    assert capabilities["config_sections"]["store_forward"]["state"] == "unsupported"
+    assert capabilities["config_sections"]["serial"]["state"] == "unsupported"
+    assert capabilities["config_sections"]["telemetry"]["state"] == "supported"
+    assert capabilities["config_sections"]["traffic_management"]["state"] == "unknown"
+
+
+def test_capability_preflight_blocks_only_explicitly_unsupported_operations():
+    manager, interface = connected_manager()
+    interface.metadata = mesh_pb2.DeviceMetadata(canShutdown=False, hasPKC=True)
+
+    with pytest.raises(CapabilityUnsupportedError, match="shutdown"):
+        manager.request_admin_action("shutdown")
+
+    local = manager._capability_preflight("reboot", None)  # noqa: SLF001
+    assert local["state"] == "supported"
+
+    remote_metadata = mesh_pb2.DeviceMetadata(
+        hasPKC=False,
+        excluded_modules=mesh_pb2.ExcludedModules.NEIGHBORINFO_CONFIG,
+    )
+    manager._remote_capabilities["!12345678"] = (  # noqa: SLF001
+        manager._project_capabilities(  # noqa: SLF001
+            remote_metadata,
+            "!12345678",
+            "remote_admin",
+        )
+    )
+    with pytest.raises(CapabilityUnsupportedError, match="cryptography"):
+        manager._capability_preflight(  # noqa: SLF001
+            "remote_config",
+            "!12345678",
+            section="neighbor_info",
+        )
+
+
+def test_unknown_remote_capabilities_are_reported_without_false_blocking():
+    manager, _ = connected_manager()
+
+    preflight = manager._capability_preflight(  # noqa: SLF001
+        "remote_config",
+        "!12345678",
+        section="telemetry",
+    )
+
+    assert preflight["state"] == "unknown"
+    assert "not been loaded" in preflight["reason"]
+
+
+def test_admin_metadata_response_is_extracted_from_raw_protobuf():
+    metadata = mesh_pb2.DeviceMetadata(firmware_version="2.7.8", hasPKC=True)
+    raw = admin_pb2.AdminMessage()
+    raw.get_device_metadata_response.CopyFrom(metadata)
+
+    extracted = MeshtasticManager._metadata_from_admin_packet(  # noqa: SLF001
+        {"decoded": {"admin": {"raw": raw}}}
+    )
+
+    assert extracted.firmware_version == "2.7.8"
+    assert extracted.hasPKC is True
+
+
+def test_remote_capability_request_caches_metadata_and_refreshes_stale_session():
+    manager, interface = connected_manager()
+    metadata = mesh_pb2.DeviceMetadata(
+        firmware_version="2.7.8",
+        hasPKC=True,
+        hw_model=mesh_pb2.HardwareModel.TBEAM,
+    )
+    raw = admin_pb2.AdminMessage()
+    raw.get_device_metadata_response.CopyFrom(metadata)
+    interface.remote_node.admin_metadata_responses = [
+        {
+            "decoded": {
+                "routing": {"errorReason": "ADMIN_BAD_SESSION_KEY"},
+            }
+        },
+        {"decoded": {"admin": {"raw": raw}}},
+    ]
+
+    accepted = manager.request_capabilities("!12345678")
+    deadline = time.monotonic() + 2
+    result = None
+    while time.monotonic() < deadline:
+        result = next(
+            (
+                event
+                for event in manager.events()
+                if event["kind"] == "operation_result"
+                and event["operation"] == "capabilities"
+            ),
+            None,
+        )
+        if result is not None:
+            break
+        time.sleep(0.01)
+
+    assert accepted == {"status": "requested", "node_id": "!12345678"}
+    assert result is not None
+    assert result["success"] is True
+    assert result["result"]["session_refreshed"] is True
+    assert result["result"]["attempts"] == 2
+    assert interface.remote_node.session_refreshes == 1
+    assert manager.capability_inventory()["remote"]["!12345678"][
+        "firmware_version"
+    ] == "2.7.8"
 
 
 def test_auto_reconnect_waits_with_backoff_and_manual_disconnect_stops_it():
@@ -912,6 +1061,23 @@ def test_config_metadata_exposes_firmware_limits_and_friendly_protocol_choices()
     protocols = next(item for item in network["fields"] if item["name"] == "enabled_protocols")
     assert protocols["label"] == "Допълнително IP излъчване"
     assert [item["value"] for item in protocols["metadata"]["choices"]] == [0, 1]
+
+
+def test_config_sections_are_annotated_and_excluded_module_writes_are_blocked():
+    manager, interface = connected_manager()
+    interface.metadata = mesh_pb2.DeviceMetadata(
+        hasPKC=True,
+        excluded_modules=mesh_pb2.ExcludedModules.NEIGHBORINFO_CONFIG,
+    )
+
+    sections = manager.config()["sections"]
+    neighbor = next(item for item in sections if item["name"] == "neighbor_info")
+    telemetry = next(item for item in sections if item["name"] == "telemetry")
+
+    assert neighbor["capability"]["state"] == "unsupported"
+    assert telemetry["capability"]["state"] == "supported"
+    with pytest.raises(CapabilityUnsupportedError, match="NEIGHBORINFO_CONFIG"):
+        manager.update_config("neighbor_info", {"enabled": True})
 
 
 def test_neighbor_interval_below_firmware_minimum_is_rejected():

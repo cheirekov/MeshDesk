@@ -14,7 +14,11 @@ from meshdesk.connection_profiles import (
     ConnectionProfileStore,
 )
 from meshdesk.discovery import SerialDiscovery, TcpDiscovery
-from meshdesk.manager import MeshtasticManager, RequestCooldownError
+from meshdesk.manager import (
+    CapabilityUnsupportedError,
+    MeshtasticManager,
+    RequestCooldownError,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -72,6 +76,10 @@ class ConfigImportRequest(BaseModel):
 class RemoteConfigRequest(BaseModel):
     node_id: str
     section: str
+
+
+class CapabilityRequest(BaseModel):
+    node_id: str | None = None
 
 
 class NodeActionRequest(BaseModel):
@@ -182,6 +190,17 @@ def create_app(
     @api.get("/api/status")
     def status() -> dict:
         return radio.status()
+
+    @api.get("/api/capabilities")
+    def capabilities() -> dict:
+        return radio.capability_inventory()
+
+    @api.post("/api/capabilities/refresh", status_code=202)
+    def refresh_capabilities(request: CapabilityRequest) -> dict:
+        try:
+            return radio.request_capabilities(request.node_id)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api.get("/api/connection-profiles")
     def list_connection_profiles() -> dict:
@@ -441,6 +460,16 @@ def create_app(
                 },
                 headers={"Retry-After": str(max(1, int(exc.remaining_seconds + 0.999)))},
             ) from exc
+        except CapabilityUnsupportedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "capability_unsupported",
+                    "operation": exc.operation,
+                    "node_id": exc.node_id,
+                    "message": str(exc),
+                },
+            ) from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -483,6 +512,11 @@ def create_app(
         try:
             radio.update_config(request.section, request.values, request.node_id)
             return radio.config(request.node_id)
+        except CapabilityUnsupportedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "capability_unsupported", "message": str(exc)},
+            ) from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -493,6 +527,11 @@ def create_app(
         try:
             radio.request_remote_config(request.node_id, request.section)
             return {"accepted": True}
+        except CapabilityUnsupportedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "capability_unsupported", "message": str(exc)},
+            ) from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -509,6 +548,11 @@ def create_app(
     def import_config(request: ConfigImportRequest) -> dict:
         try:
             return radio.import_config(request.document, request.node_id)
+        except CapabilityUnsupportedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "capability_unsupported", "message": str(exc)},
+            ) from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -544,6 +588,16 @@ def create_app(
                 request.preserve_node_preferences,
             )
             return {"accepted": True}
+        except CapabilityUnsupportedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "capability_unsupported",
+                    "operation": exc.operation,
+                    "node_id": exc.node_id,
+                    "message": str(exc),
+                },
+            ) from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:

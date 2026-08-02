@@ -15,7 +15,9 @@ from typing import Any
 from google.protobuf.json_format import MessageToDict, ParseDict
 from google.protobuf.message import Message
 from meshtastic.protobuf import (
+    admin_pb2,
     channel_pb2,
+    config_pb2,
     mesh_pb2,
     paxcount_pb2,
     portnums_pb2,
@@ -105,6 +107,23 @@ RECONNECT_ELIGIBLE_REASONS = {
     "device_not_found",
     "connection_failed",
 }
+SECTION_EXCLUDED_MODULES = {
+    "mqtt": "MQTT_CONFIG",
+    "serial": "SERIAL_CONFIG",
+    "external_notification": "EXTNOTIF_CONFIG",
+    "store_forward": "STOREFORWARD_CONFIG",
+    "range_test": "RANGETEST_CONFIG",
+    "telemetry": "TELEMETRY_CONFIG",
+    "canned_message": "CANNEDMSG_CONFIG",
+    "audio": "AUDIO_CONFIG",
+    "remote_hardware": "REMOTEHARDWARE_CONFIG",
+    "neighbor_info": "NEIGHBORINFO_CONFIG",
+    "ambient_lighting": "AMBIENTLIGHTING_CONFIG",
+    "detection_sensor": "DETECTIONSENSOR_CONFIG",
+    "paxcounter": "PAXCOUNTER_CONFIG",
+    "bluetooth": "BLUETOOTH_CONFIG",
+    "network": "NETWORK_CONFIG",
+}
 
 
 def _now() -> str:
@@ -154,6 +173,16 @@ class DeviceIdentityMismatchError(RuntimeError):
         super().__init__(
             f"Reconnect expected {expected_id}, but the endpoint returned {observed_id}"
         )
+
+
+class CapabilityUnsupportedError(RuntimeError):
+    """A target explicitly reports that an operation is unavailable."""
+
+    def __init__(self, operation: str, node_id: str, reason: str) -> None:
+        self.operation = operation
+        self.node_id = node_id
+        self.reason = reason
+        super().__init__(reason)
 
 
 class MeshtasticManager:
@@ -217,6 +246,7 @@ class MeshtasticManager:
         self._history_directory = Path(history_directory)
         self._remote_nodes: dict[str, Any] = {}
         self._remote_loaded_sections: dict[str, set[str]] = {}
+        self._remote_capabilities: dict[str, dict[str, Any]] = {}
         self._history_replay_requested_at: int | None = None
         self._history_replay_remaining = 0
         self._pending_receive_packets: list[tuple[Any, dict[str, Any]]] = []
@@ -403,6 +433,7 @@ class MeshtasticManager:
                 self._profile_name = None
             self._remote_nodes = {}
             self._remote_loaded_sections = {}
+            self._remote_capabilities = {}
             self._history_replay_requested_at = None
             self._history_replay_remaining = 0
             self._pending_receive_packets = []
@@ -1665,6 +1696,10 @@ class MeshtasticManager:
                 raise ValueError(
                     "Favorite/ignore is not applicable to the managed radio itself"
                 )
+            preflight = self._capability_preflight(
+                action,
+                managed_node_id,
+            )
             managed_node = self._managed_node(managed_node_id)
             ack_response: dict[str, Any] = {}
             session_refreshed = False
@@ -1743,6 +1778,7 @@ class MeshtasticManager:
                         else True,
                         "session_refreshed": session_refreshed,
                         "attempts": attempts,
+                        "preflight": preflight,
                     },
                     packet=_safe(packet),
                 )
@@ -1778,6 +1814,7 @@ class MeshtasticManager:
                     "remote_state_readable": False if managed_node_id else True,
                     "session_refreshed": session_refreshed,
                     "attempts": attempts,
+                    "preflight": preflight,
                 },
                 packet=safe_packet,
                 acknowledgment_packet=ack_packet or None,
@@ -2049,6 +2086,31 @@ class MeshtasticManager:
         sections = [self._owner_section(node_id)]
         if local_node is not None:
             sections.extend(self._config_sections(local_node, loaded))
+        inventory = self.capability_inventory()
+        target_capabilities = (
+            inventory["remote"].get(node_id)
+            if node_id
+            else inventory["local"]
+        )
+        section_capabilities = (target_capabilities or {}).get("config_sections", {})
+        for section in sections:
+            if section["name"] == OWNER_SECTION:
+                section["capability"] = {
+                    "state": "supported" if not node_id else "unknown",
+                    "supported": True if not node_id else None,
+                    "reason": None
+                    if not node_id
+                    else "Remote DeviceMetadata does not advertise owner editing",
+                }
+            else:
+                section["capability"] = section_capabilities.get(
+                    section["name"],
+                    {
+                        "state": "unknown",
+                        "supported": None,
+                        "reason": "DeviceMetadata has not been loaded for this target",
+                    },
+                )
         return {
             "sections": sections,
             "node_id": node_id or self._profile_id,
@@ -2070,6 +2132,11 @@ class MeshtasticManager:
         if section == OWNER_SECTION:
             self._update_owner(values, node_id)
             return
+        preflight = self._capability_preflight(
+            "update_config",
+            node_id.lower() if node_id else None,
+            section=section,
+        )
         with self._lock:
             interface = self._interface
             if self._state != "connected" or interface is None:
@@ -2135,6 +2202,7 @@ class MeshtasticManager:
             message=f"Configuration section '{section}' written",
             node_id=node_id or self._profile_id,
             remote=bool(node_id),
+            preflight=preflight,
         )
 
     def _update_owner(
@@ -2163,6 +2231,10 @@ class MeshtasticManager:
             raise ValueError("Краткото име може да съдържа най-много 4 знака")
         managed = self._managed_node(node_id)
         interface = self._connected_interface()
+        preflight = self._capability_preflight(
+            "update_owner",
+            node_id.lower() if node_id else None,
+        )
         with self._command_lock:
             managed.setOwner(
                 long_name=long_name,
@@ -2177,6 +2249,7 @@ class MeshtasticManager:
             message="Owner/User settings written",
             node_id=node_id or self._profile_id,
             remote=bool(node_id),
+            preflight=preflight,
         )
 
     def request_remote_config(self, node_id: str, section: str) -> None:
@@ -2184,6 +2257,11 @@ class MeshtasticManager:
         if section not in LOCAL_CONFIGS and section not in MODULE_CONFIGS:
             raise ValueError("Unknown configuration section")
         interface = self._connected_interface()
+        preflight = self._capability_preflight(
+            "remote_config",
+            node_id,
+            section=section,
+        )
         with self._lock:
             generation = self._generation
         self._add_event(
@@ -2191,6 +2269,7 @@ class MeshtasticManager:
             operation="remote_config",
             target=node_id,
             section=section,
+            preflight=preflight,
         )
 
         def worker() -> None:
@@ -2318,6 +2397,7 @@ class MeshtasticManager:
                 "the connected radio's NodeDB"
             )
         interface = self._connected_interface()
+        preflight = self._capability_preflight(action, node_id)
         with self._lock:
             generation = self._generation
         self._add_event(
@@ -2327,6 +2407,7 @@ class MeshtasticManager:
             target=node_id or self._profile_id,
             remote=bool(node_id),
             preserve_node_preferences=preserve_node_preferences,
+            preflight=preflight,
         )
 
         def worker() -> None:
@@ -2383,6 +2464,7 @@ class MeshtasticManager:
                     result={
                         "accepted": True,
                         "restored_preferences": restored,
+                        "preflight": preflight,
                     },
                     packet=_safe(packet),
                 )
@@ -2499,6 +2581,312 @@ class MeshtasticManager:
                 error=str(exc) or type(exc).__name__,
             )
 
+    @staticmethod
+    def _enum_name(enum_type: Any, value: int) -> str:
+        try:
+            return enum_type.Name(int(value))
+        except (KeyError, ValueError):
+            return f"UNKNOWN ({int(value)})"
+
+    @classmethod
+    def _project_capabilities(
+        cls,
+        metadata: Any,
+        node_id: str,
+        source: str,
+    ) -> dict[str, Any]:
+        if metadata is None:
+            return {
+                "node_id": node_id,
+                "status": "unknown",
+                "source": source,
+                "updated_at": None,
+                "reason": "Device metadata has not been received",
+                "features": {},
+                "config_sections": {},
+            }
+
+        excluded_mask = int(getattr(metadata, "excluded_modules", 0))
+        excluded_names = []
+        excluded_values = mesh_pb2.ExcludedModules.DESCRIPTOR.values_by_name
+        for name, enum_value in excluded_values.items():
+            if enum_value.number and excluded_mask & enum_value.number:
+                excluded_names.append(name)
+
+        features = {}
+        feature_fields = {
+            "shutdown": ("canShutdown", "Software shutdown"),
+            "wifi": ("hasWifi", "Wi-Fi hardware"),
+            "bluetooth": ("hasBluetooth", "Bluetooth hardware"),
+            "ethernet": ("hasEthernet", "Ethernet hardware"),
+            "remote_hardware": ("hasRemoteHardware", "Remote Hardware"),
+            "pkc": ("hasPKC", "Public-key cryptography"),
+        }
+        for name, (field, label) in feature_fields.items():
+            supported = bool(getattr(metadata, field, False))
+            features[name] = {
+                "state": "supported" if supported else "unsupported",
+                "supported": supported,
+                "label": label,
+            }
+
+        config_sections = {}
+        core_sections = set(LOCAL_CONFIGS) - {"network", "bluetooth"}
+        for section in LOCAL_CONFIGS | MODULE_CONFIGS:
+            excluded_name = SECTION_EXCLUDED_MODULES.get(section)
+            if excluded_name and excluded_name in excluded_values:
+                bit = excluded_values[excluded_name].number
+                supported = not bool(excluded_mask & bit)
+                config_sections[section] = {
+                    "state": "supported" if supported else "unsupported",
+                    "supported": supported,
+                    "reason": (
+                        None
+                        if supported
+                        else f"Firmware metadata excludes {excluded_name}"
+                    ),
+                }
+            elif section in core_sections:
+                config_sections[section] = {
+                    "state": "supported",
+                    "supported": True,
+                    "reason": None,
+                }
+            else:
+                config_sections[section] = {
+                    "state": "unknown",
+                    "supported": None,
+                    "reason": "No DeviceMetadata capability bit exists for this section",
+                }
+
+        return {
+            "node_id": node_id,
+            "status": "known",
+            "source": source,
+            "updated_at": _now(),
+            "reason": None,
+            "firmware_version": str(getattr(metadata, "firmware_version", "") or "")
+            or None,
+            "device_state_version": int(getattr(metadata, "device_state_version", 0)),
+            "hardware_model": cls._enum_name(
+                mesh_pb2.HardwareModel,
+                int(getattr(metadata, "hw_model", 0)),
+            ),
+            "role": cls._enum_name(
+                config_pb2.Config.DeviceConfig.Role,
+                int(getattr(metadata, "role", 0)),
+            ),
+            "position_flags": int(getattr(metadata, "position_flags", 0)),
+            "excluded_modules_mask": excluded_mask,
+            "excluded_modules": excluded_names,
+            "features": features,
+            "config_sections": config_sections,
+            "raw": _safe(metadata),
+        }
+
+    def capability_inventory(self) -> dict[str, Any]:
+        with self._lock:
+            interface = self._interface
+            profile_id = self._profile_id
+            connected_at = self._connected_at
+            remote = {
+                node_id: dict(capabilities)
+                for node_id, capabilities in self._remote_capabilities.items()
+            }
+        local = self._project_capabilities(
+            getattr(interface, "metadata", None) if interface is not None else None,
+            profile_id or "^local",
+            "handshake",
+        )
+        if local["status"] == "known":
+            local["updated_at"] = connected_at
+        return {"local": local, "remote": remote}
+
+    @staticmethod
+    def _metadata_from_admin_packet(packet: dict[str, Any]) -> Any | None:
+        decoded = packet.get("decoded") or {}
+        admin = decoded.get("admin") or {}
+        raw = admin.get("raw") if isinstance(admin, dict) else None
+        if raw is not None:
+            with contextlib.suppress(Exception):
+                if raw.HasField("get_device_metadata_response"):
+                    return raw.get_device_metadata_response
+        if isinstance(admin, dict):
+            response = admin.get("get_device_metadata_response") or admin.get(
+                "getDeviceMetadataResponse"
+            )
+            if isinstance(response, dict):
+                metadata = mesh_pb2.DeviceMetadata()
+                ParseDict(response, metadata, ignore_unknown_fields=True)
+                return metadata
+        return None
+
+    def request_capabilities(self, node_id: str | None = None) -> dict[str, Any]:
+        interface = self._connected_interface()
+        if not node_id:
+            local_id = self._local_node_id(interface) or "^local"
+            capabilities = self._project_capabilities(
+                getattr(interface, "metadata", None),
+                local_id,
+                "handshake",
+            )
+            if capabilities["status"] != "known":
+                raise RuntimeError("The connected radio did not provide DeviceMetadata")
+            return capabilities
+
+        node_id = self._validate_node_destination(node_id).lower()
+        with self._lock:
+            generation = self._generation
+        self._add_event(
+            "operation_request",
+            operation="capabilities",
+            target=node_id,
+            remote=True,
+        )
+
+        def worker() -> None:
+            try:
+                remote = self._managed_node(node_id)
+                response: dict[str, Any] = {}
+                session_refreshed = False
+                attempts = 1
+
+                def capture_metadata(packet: dict[str, Any]) -> None:
+                    response["packet"] = _safe(packet)
+                    metadata = self._metadata_from_admin_packet(packet)
+                    if metadata is not None:
+                        response["metadata"] = metadata
+                    error = self._admin_response_error(packet)
+                    response["error"] = error
+                    if error not in {None, "NONE", 0}:
+                        interface._acknowledgment.receivedNak = True
+                    else:
+                        interface._acknowledgment.receivedAck = True
+
+                message = admin_pb2.AdminMessage(get_device_metadata_request=True)
+                with self._command_lock:
+                    def send_request() -> Any:
+                        response.clear()
+                        sent = remote._sendAdmin(
+                            message,
+                            wantResponse=True,
+                            onResponse=capture_metadata,
+                        )
+                        interface.waitForAckNak()
+                        return sent
+
+                    packet = send_request()
+                    if response.get("error") == "ADMIN_BAD_SESSION_KEY":
+                        session_refreshed = True
+                        attempts = 2
+                        self._clear_admin_session_key(interface, remote)
+                        remote.ensureSessionKey()
+                        packet = send_request()
+                error = response.get("error")
+                if error not in {None, "NONE", 0}:
+                    raise RuntimeError(f"Remote node rejected metadata request: {error}")
+                metadata = response.get("metadata")
+                if metadata is None:
+                    raise RuntimeError("Remote node did not return DeviceMetadata")
+                capabilities = self._project_capabilities(
+                    metadata,
+                    node_id,
+                    "remote_admin",
+                )
+                with self._lock:
+                    if generation != self._generation or interface is not self._interface:
+                        return
+                    self._remote_capabilities[node_id] = capabilities
+                self._add_event(
+                    "operation_result",
+                    operation="capabilities",
+                    target=node_id,
+                    remote=True,
+                    success=True,
+                    result={
+                        "capabilities": capabilities,
+                        "session_refreshed": session_refreshed,
+                        "attempts": attempts,
+                    },
+                    packet=_safe(packet),
+                    response_packet=response.get("packet"),
+                )
+            except Exception as exc:
+                logger.exception("Remote capability request failed")
+                self._add_event(
+                    "operation_result",
+                    operation="capabilities",
+                    target=node_id,
+                    remote=True,
+                    success=False,
+                    error=str(exc) or type(exc).__name__,
+                )
+
+        threading.Thread(
+            target=worker,
+            name=f"meshdesk-capabilities-{node_id}",
+            daemon=True,
+        ).start()
+        return {"status": "requested", "node_id": node_id}
+
+    def _capability_preflight(
+        self,
+        operation: str,
+        node_id: str | None,
+        *,
+        section: str | None = None,
+    ) -> dict[str, Any]:
+        interface = self._connected_interface()
+        target = node_id or self._local_node_id(interface) or "^local"
+        if node_id:
+            with self._lock:
+                capabilities = self._remote_capabilities.get(node_id.lower())
+        else:
+            capabilities = self._project_capabilities(
+                getattr(interface, "metadata", None),
+                target,
+                "handshake",
+            )
+            if capabilities["status"] != "known":
+                capabilities = None
+
+        if capabilities is None:
+            return {
+                "state": "unknown",
+                "target": target,
+                "operation": operation,
+                "reason": "DeviceMetadata has not been loaded for this target",
+            }
+
+        if node_id and not capabilities["features"]["pkc"]["supported"]:
+            raise CapabilityUnsupportedError(
+                operation,
+                target,
+                "Remote metadata reports that public-key cryptography is unavailable",
+            )
+        if operation == "shutdown" and not capabilities["features"]["shutdown"][
+            "supported"
+        ]:
+            raise CapabilityUnsupportedError(
+                operation,
+                target,
+                "Device metadata reports that software shutdown is unsupported",
+            )
+        if section:
+            section_capability = capabilities["config_sections"].get(section)
+            if section_capability and section_capability["state"] == "unsupported":
+                raise CapabilityUnsupportedError(
+                    operation,
+                    target,
+                    section_capability["reason"],
+                )
+        return {
+            "state": "supported",
+            "target": target,
+            "operation": operation,
+            "reason": None,
+        }
+
     def status(self) -> dict[str, Any]:
         with self._lock:
             interface = self._interface
@@ -2606,6 +2994,7 @@ class MeshtasticManager:
                     "radio": radio_queue,
                 }
         result["request_controls"] = self._request_control_status()
+        result["capabilities"] = self.capability_inventory()
         return result
 
     def nodes(self) -> list[dict[str, Any]]:

@@ -42,7 +42,7 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 - [x] Еднократно session refresh/retry при `ADMIN_BAD_SESSION_KEY`.
 - [x] Stable local cache projection и защита от self-preference операции.
 - [x] Audit резултат с `accepted, unverified` при непрочитаем remote state.
-- [ ] Capability/firmware preflight преди изпращане.
+- [x] Capability/firmware preflight преди изпращане.
 
 Този milestone беше поставен пред auto-reconnect и остава задължителна основа
 за бъдещите mass operations, защото изисква еднозначно адресиране и честен
@@ -87,7 +87,7 @@ result model.
 ## M5 — Fleet inventory foundation
 
 - [ ] Стабилна device identity, независимо от transport.
-- [ ] Capability/firmware inventory.
+- [ ] Persistent capability/firmware inventory за повече управлявани устройства.
 - [ ] Tags и saved selections за управлявани устройства.
 - [ ] Разделяне на `managed devices` от `subject nodes`.
 - [ ] Operation plan, dry-run diff и audit log.

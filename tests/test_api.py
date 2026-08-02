@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from meshdesk.app import create_app
 from meshdesk.connection_profiles import ConnectionProfileStore
-from meshdesk.manager import RequestCooldownError
+from meshdesk.manager import CapabilityUnsupportedError, RequestCooldownError
 
 
 class StubManager:
@@ -13,6 +13,16 @@ class StubManager:
 
     def status(self):
         return {"state": "disconnected", "event_sequence": 0}
+
+    def capability_inventory(self):
+        return {
+            "local": {"node_id": "^local", "status": "unknown"},
+            "remote": {},
+        }
+
+    def request_capabilities(self, node_id=None):
+        self.calls.append(("capabilities", node_id))
+        return {"status": "requested", "node_id": node_id}
 
     def connect_tcp(
         self,
@@ -239,6 +249,40 @@ def test_serial_discovery_and_connection_endpoints():
         False,
         None,
     )
+
+
+def test_capability_inventory_and_remote_refresh_endpoints():
+    manager = StubManager()
+    with TestClient(create_app(manager)) as client:
+        inventory = client.get("/api/capabilities")
+        refresh = client.post(
+            "/api/capabilities/refresh",
+            json={"node_id": "!12345678"},
+        )
+
+    assert inventory.status_code == 200
+    assert inventory.json()["local"]["status"] == "unknown"
+    assert refresh.status_code == 202
+    assert manager.calls[0] == ("capabilities", "!12345678")
+
+
+def test_capability_preflight_failure_is_an_explicit_conflict():
+    class UnsupportedManager(StubManager):
+        def request_admin_action(self, action, node_id, preserve):
+            raise CapabilityUnsupportedError(
+                action,
+                node_id or "!12345678",
+                "Software shutdown is unsupported",
+            )
+
+    with TestClient(create_app(UnsupportedManager())) as client:
+        response = client.post(
+            "/api/administration",
+            json={"action": "shutdown"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "capability_unsupported"
 
 
 def test_serial_saved_profile_enables_reconnect_and_identity_guard(tmp_path):

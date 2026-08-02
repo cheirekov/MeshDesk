@@ -63,6 +63,10 @@ def test_saved_connection_profiles_are_available_in_connection_panel() -> None:
     assert "matchingProfileForDiscoveredDevice" in script.text
     assert "discoverSerialDevices" in script.text
     assert "renderSerialDiscoveryDetails" in script.text
+    assert 'id="adminCapabilityCard"' in page.text
+    assert 'id="refreshCapabilities"' in page.text
+    assert "renderAdminCapabilities" in script.text
+    assert "config-capability-notice" in script.text
 
 
 def test_configuration_has_contextual_guidance() -> None:
