@@ -921,6 +921,70 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 .channel-psk-status.secure { color: var(--green); }
 .channel-psk-status.warning { color: #dfbf77; }
 .channel-psk-status.danger { color: #ff9999; }
+.channel-preview-modal-card {
+  width: min(760px, 100%);
+  max-height: min(88vh, 820px);
+  overflow: auto;
+}
+.channel-preview-summary { margin-bottom: 12px !important; }
+.channel-preview-changes { display: grid; gap: 6px; }
+.channel-preview-change {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1.5fr);
+  gap: 12px;
+  align-items: center;
+  padding: 9px 11px;
+  border: 1px solid #30473f;
+  border-radius: 8px;
+  background: #0a1713;
+}
+.channel-preview-change.warning,
+.channel-preview-change.sensitive { border-color: #66512b; }
+.channel-preview-change.destructive { border-color: #743e3e; }
+.channel-preview-change > strong { font-size: 0.7rem; }
+.channel-preview-change > span {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  font: 0.65rem ui-monospace, monospace;
+}
+.channel-preview-change del { color: #b58e8e; overflow-wrap: anywhere; }
+.channel-preview-change ins {
+  color: #bce899;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.channel-preview-warnings { display: grid; gap: 6px; margin-top: 12px; }
+.channel-preview-warning {
+  padding: 8px 10px;
+  border-left: 3px solid var(--amber);
+  border-radius: 6px;
+  background: rgba(72, 53, 17, 0.24);
+  color: #d7bc7b;
+  font-size: 0.67rem;
+  line-height: 1.45;
+}
+.channel-preview-warning.destructive {
+  border-left-color: var(--red);
+  background: rgba(82, 29, 29, 0.24);
+  color: #ffadad;
+}
+.channel-preview-backup {
+  margin-top: 14px;
+  padding: 11px 12px;
+  border: 1px solid #355344;
+  border-radius: 9px;
+  background: rgba(20, 45, 36, 0.42);
+}
+.channel-preview-backup strong { color: var(--green); font-size: 0.72rem; }
+.channel-preview-backup p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
 
 .help-trigger {
   display: inline-grid;
@@ -1868,6 +1932,8 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   .channel-editor-grid { grid-template-columns: 1fr; }
   .channel-editor-grid .wide { grid-column: 1; }
   .channel-manager-intro { flex-direction: column; }
+  .channel-preview-change { grid-template-columns: 1fr; }
+  .channel-preview-change > span { justify-content: flex-start; flex-wrap: wrap; }
   .conversation-sidebar {
     max-height: 250px;
     border-right: 0;

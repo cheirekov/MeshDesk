@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
+import hmac
+import json
 import logging
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -100,6 +104,8 @@ DEFAULT_HISTORY_MAX_MESSAGES = 100
 DEFAULT_RECONNECT_DELAYS_SECONDS = (5.0, 10.0, 20.0, 40.0, 60.0)
 DEFAULT_RECONNECT_STABLE_SECONDS = 10.0
 DEFAULT_BLE_HEALTH_POLL_SECONDS = 2.0
+CHANNEL_PREVIEW_TTL_SECONDS = 300
+CHANNEL_BACKUP_NAMESPACE = "channel-backups"
 RECONNECT_ELIGIBLE_REASONS = {
     "connection_lost",
     "timeout",
@@ -255,6 +261,8 @@ class MeshtasticManager:
         self._remote_nodes: dict[str, Any] = {}
         self._remote_loaded_sections: dict[str, set[str]] = {}
         self._remote_capabilities: dict[str, dict[str, Any]] = {}
+        self._channel_previews: dict[str, dict[str, Any]] = {}
+        self._channel_preview_key = secrets.token_bytes(32)
         self._history_replay_requested_at: int | None = None
         self._history_replay_remaining = 0
         self._pending_receive_packets: list[tuple[Any, dict[str, Any]]] = []
@@ -442,6 +450,7 @@ class MeshtasticManager:
             self._remote_nodes = {}
             self._remote_loaded_sections = {}
             self._remote_capabilities = {}
+            self._channel_previews = {}
             self._history_replay_requested_at = None
             self._history_replay_remaining = 0
             self._pending_receive_packets = []
@@ -958,7 +967,17 @@ class MeshtasticManager:
             "encrypted": psk_state != "unencrypted",
         }
 
-    def update_channel(
+    @staticmethod
+    def _channel_fingerprint(channels: list[Any]) -> str:
+        digest = hashlib.sha256()
+        for channel in sorted(channels, key=lambda item: item.index):
+            digest.update(int(channel.index).to_bytes(1, "big"))
+            payload = channel.SerializeToString(deterministic=True)
+            digest.update(len(payload).to_bytes(4, "big"))
+            digest.update(payload)
+        return digest.hexdigest()
+
+    def _channel_request_digest(
         self,
         index: int,
         role: str,
@@ -968,7 +987,64 @@ class MeshtasticManager:
         uplink_enabled: bool,
         downlink_enabled: bool,
         position_precision: int,
-    ) -> list[dict[str, Any]]:
+    ) -> str:
+        document = {
+            "index": index,
+            "role": role,
+            "name": name.strip(),
+            "psk_mode": psk_mode,
+            "psk": psk.strip(),
+            "uplink_enabled": bool(uplink_enabled),
+            "downlink_enabled": bool(downlink_enabled),
+            "position_precision": int(position_precision),
+        }
+        payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+        return hmac.new(
+            self._channel_preview_key,
+            payload,
+            hashlib.sha256,
+        ).hexdigest()
+
+    @staticmethod
+    def _channel_psk_summary(raw_psk: bytes) -> str:
+        state = pskToString(raw_psk)
+        if state == "secret":
+            return f"secret AES-{len(raw_psk) * 8}"
+        return state
+
+    @staticmethod
+    def _channel_change(
+        changes: list[dict[str, Any]],
+        field: str,
+        label: str,
+        before: Any,
+        after: Any,
+        *,
+        severity: str = "normal",
+    ) -> None:
+        if before != after:
+            changes.append(
+                {
+                    "field": field,
+                    "label": label,
+                    "before": before,
+                    "after": after,
+                    "severity": severity,
+                }
+            )
+
+    def _prepare_channel_update(
+        self,
+        interface: Any,
+        index: int,
+        role: str,
+        name: str,
+        psk_mode: str,
+        psk: str,
+        uplink_enabled: bool,
+        downlink_enabled: bool,
+        position_precision: int,
+    ) -> dict[str, Any]:
         if not 0 <= index <= 7:
             raise ValueError("Channel index must be between 0 and 7")
         if role not in {"PRIMARY", "SECONDARY", "DISABLED"}:
@@ -987,29 +1063,51 @@ class MeshtasticManager:
         if not 0 <= position_precision <= 32:
             raise ValueError("Position precision must be between 0 and 32 bits")
 
-        interface = self._connected_interface()
-        with self._command_lock:
-            channels = list(interface.localNode.channels or [])
-            by_index = {channel.index: channel for channel in channels}
-            channel = by_index.get(index)
-            if channel is None:
-                raise ValueError(f"Channel slot {index} is not available")
-            current_role = channel.Role.Name(channel.role)
+        channels = list(interface.localNode.channels or [])
+        by_index = {channel.index: channel for channel in channels}
+        channel = by_index.get(index)
+        if channel is None:
+            raise ValueError(f"Channel slot {index} is not available")
+        current_role = channel.Role.Name(channel.role)
+        fingerprint = self._channel_fingerprint(channels)
+        request_digest = self._channel_request_digest(
+            index,
+            role,
+            name,
+            psk_mode,
+            psk,
+            uplink_enabled,
+            downlink_enabled,
+            position_precision,
+        )
+        changes: list[dict[str, Any]] = []
+        warnings: list[dict[str, str]] = []
+        effective_psk_mode = psk_mode
+        psk_changed = False
+        candidate: Any | None = None
 
-            if role == "DISABLED":
-                if index == 0:
-                    raise ValueError("The PRIMARY channel cannot be disabled")
-                if current_role == "DISABLED":
-                    return self.channel_slots()
-                interface.localNode.deleteChannel(index)
-                self._add_event(
-                    "channel_config",
-                    operation="disable",
-                    channel=index,
-                    role="DISABLED",
+        if role == "DISABLED":
+            if index == 0:
+                raise ValueError("The PRIMARY channel cannot be disabled")
+            self._channel_change(
+                changes,
+                "role",
+                "Role",
+                current_role,
+                "DISABLED",
+                severity="destructive",
+            )
+            if changes:
+                warnings.append(
+                    {
+                        "severity": "destructive",
+                        "message": (
+                            "Премахването може да пренареди следващите Secondary "
+                            "slots във firmware-а."
+                        ),
+                    }
                 )
-                return self.channel_slots()
-
+        else:
             if current_role == "DISABLED":
                 first_free = min(
                     item.index
@@ -1045,7 +1143,6 @@ class MeshtasticManager:
             candidate.settings.downlink_enabled = downlink_enabled
             candidate.settings.module_settings.position_precision = position_precision
 
-            effective_psk_mode = psk_mode
             if current_role == "DISABLED" and psk_mode == "unchanged":
                 effective_psk_mode = "random"
             if effective_psk_mode == "custom":
@@ -1062,24 +1159,292 @@ class MeshtasticManager:
             elif effective_psk_mode != "unchanged":
                 candidate.settings.psk = fromPSK(effective_psk_mode)
 
-            original = channel_pb2.Channel()
-            original.CopyFrom(channel)
-            channel.CopyFrom(candidate)
-            try:
-                interface.localNode.writeChannel(index)
-            except Exception:
-                channel.CopyFrom(original)
-                raise
+            self._channel_change(changes, "role", "Role", current_role, role)
+            self._channel_change(
+                changes,
+                "name",
+                "Име",
+                channel.settings.name or "(празно)",
+                name or "(празно)",
+            )
+            self._channel_change(
+                changes,
+                "uplink_enabled",
+                "MQTT uplink",
+                bool(channel.settings.uplink_enabled),
+                bool(uplink_enabled),
+                severity="warning" if uplink_enabled else "normal",
+            )
+            self._channel_change(
+                changes,
+                "downlink_enabled",
+                "MQTT downlink",
+                bool(channel.settings.downlink_enabled),
+                bool(downlink_enabled),
+                severity="warning" if downlink_enabled else "normal",
+            )
+            self._channel_change(
+                changes,
+                "position_precision",
+                "Position precision",
+                int(channel.settings.module_settings.position_precision),
+                int(position_precision),
+            )
+            if effective_psk_mode != "unchanged":
+                current_psk = bytes(channel.settings.psk)
+                next_psk = bytes(candidate.settings.psk)
+                if current_psk != next_psk:
+                    psk_changed = True
+                    before_summary = self._channel_psk_summary(current_psk)
+                    after_summary = self._channel_psk_summary(next_psk)
+                    changes.append(
+                        {
+                            "field": "psk",
+                            "label": "PSK",
+                            "before": before_summary,
+                            "after": (
+                                f"{after_summary} (нов ключ)"
+                                if after_summary == before_summary
+                                else after_summary
+                            ),
+                            "severity": "sensitive",
+                        }
+                    )
+                    next_psk_state = pskToString(candidate.settings.psk)
+                    if next_psk_state == "unencrypted":
+                        warnings.append(
+                            {
+                                "severity": "destructive",
+                                "message": "Каналът ще бъде без криптиране.",
+                            }
+                        )
+                    elif len(candidate.settings.psk) <= 1:
+                        warnings.append(
+                            {
+                                "severity": "warning",
+                                "message": (
+                                    "Избраният default/simple PSK е публично "
+                                    "известен и не е подходящ за private канал."
+                                ),
+                            }
+                        )
+                    warnings.append(
+                        {
+                            "severity": "warning",
+                            "message": (
+                                "Участниците със старото име или PSK ще загубят "
+                                "достъп до този канал."
+                            ),
+                        }
+                    )
+            if uplink_enabled or downlink_enabled:
+                warnings.append(
+                    {
+                        "severity": "warning",
+                        "message": (
+                            "MQTT bridge поведението зависи и от MQTT module "
+                            "конфигурацията на gateway устройството."
+                        ),
+                    }
+                )
+
+        return {
+            "index": index,
+            "operation": "disable" if role == "DISABLED" else "update",
+            "role": role,
+            "name": name,
+            "channels": channels,
+            "channel": channel,
+            "candidate": candidate,
+            "current_role": current_role,
+            "effective_psk_mode": effective_psk_mode,
+            "psk_changed": psk_changed,
+            "changes": changes,
+            "warnings": warnings,
+            "fingerprint": fingerprint,
+            "request_digest": request_digest,
+        }
+
+    def preview_channel(
+        self,
+        index: int,
+        role: str,
+        name: str,
+        psk_mode: str,
+        psk: str,
+        uplink_enabled: bool,
+        downlink_enabled: bool,
+        position_precision: int,
+    ) -> dict[str, Any]:
+        interface = self._connected_interface()
+        with self._command_lock:
+            plan = self._prepare_channel_update(
+                interface,
+                index,
+                role,
+                name,
+                psk_mode,
+                psk,
+                uplink_enabled,
+                downlink_enabled,
+                position_precision,
+            )
+            token = uuid.uuid4().hex
+            with self._lock:
+                if self._state != "connected" or interface is not self._interface:
+                    raise RuntimeError("The radio connection changed during preview")
+                now = time.monotonic()
+                self._channel_previews = {
+                    key: value
+                    for key, value in self._channel_previews.items()
+                    if value["expires_at"] > now
+                }
+                self._channel_previews[token] = {
+                    "expires_at": now + CHANNEL_PREVIEW_TTL_SECONDS,
+                    "profile_id": self._profile_id,
+                    "index": index,
+                    "request_digest": plan["request_digest"],
+                    "fingerprint": plan["fingerprint"],
+                }
+        return {
+            "preview_token": token,
+            "expires_in_seconds": CHANNEL_PREVIEW_TTL_SECONDS,
+            "channel": index,
+            "operation": plan["operation"],
+            "has_changes": bool(plan["changes"]),
+            "changes": plan["changes"],
+            "warnings": plan["warnings"],
+            "backup": {
+                "will_create": bool(plan["changes"]),
+                "encrypted": True,
+                "coverage": "all_channel_slots",
+            },
+        }
+
+    def _create_channel_backup(
+        self,
+        channels: list[Any],
+        *,
+        operation: str,
+        target_channel: int,
+    ) -> dict[str, Any]:
+        with self._lock:
+            profile_id = self._profile_id
+        if not profile_id:
+            raise RuntimeError("Cannot create a channel backup without device identity")
+        backup_id = uuid.uuid4().hex
+        created_at = _now()
+        snapshot = {
+            "version": 1,
+            "backup_id": backup_id,
+            "created_at": created_at,
+            "profile_id": profile_id,
+            "operation": operation,
+            "target_channel": target_channel,
+            "channels": [
+                {
+                    "index": int(channel.index),
+                    "protobuf_base64": base64.b64encode(
+                        channel.SerializeToString(deterministic=True)
+                    ).decode("ascii"),
+                }
+                for channel in sorted(channels, key=lambda item: item.index)
+            ],
+        }
+        self._history_store().append_private(
+            profile_id,
+            CHANNEL_BACKUP_NAMESPACE,
+            snapshot,
+        )
+        return {
+            "backup_id": backup_id,
+            "created_at": created_at,
+            "channel_count": len(channels),
+            "encrypted": True,
+        }
+
+    def update_channel(
+        self,
+        index: int,
+        role: str,
+        name: str,
+        psk_mode: str,
+        psk: str,
+        uplink_enabled: bool,
+        downlink_enabled: bool,
+        position_precision: int,
+        preview_token: str | None = None,
+    ) -> dict[str, Any]:
+        interface = self._connected_interface()
+        with self._command_lock:
+            plan = self._prepare_channel_update(
+                interface,
+                index,
+                role,
+                name,
+                psk_mode,
+                psk,
+                uplink_enabled,
+                downlink_enabled,
+                position_precision,
+            )
+            if not preview_token:
+                raise ValueError("A fresh channel preview is required before save")
+            with self._lock:
+                if self._state != "connected" or interface is not self._interface:
+                    raise RuntimeError("The radio connection changed after preview")
+                preview = self._channel_previews.pop(preview_token, None)
+                profile_id = self._profile_id
+            if preview is None or preview["expires_at"] <= time.monotonic():
+                raise ValueError("Channel preview expired; review the changes again")
+            if (
+                preview["profile_id"] != profile_id
+                or preview["index"] != index
+                or preview["request_digest"] != plan["request_digest"]
+            ):
+                raise ValueError("Channel request changed after preview; review it again")
+            if preview["fingerprint"] != plan["fingerprint"]:
+                raise ValueError("Channel state changed after preview; reload and review again")
+            if not plan["changes"]:
+                return {
+                    "channels": self.channel_slots(),
+                    "applied": False,
+                    "backup": None,
+                }
+
+            backup = self._create_channel_backup(
+                plan["channels"],
+                operation=plan["operation"],
+                target_channel=index,
+            )
+            channel = plan["channel"]
+            if plan["operation"] == "disable":
+                interface.localNode.deleteChannel(index)
+            else:
+                original = channel_pb2.Channel()
+                original.CopyFrom(channel)
+                channel.CopyFrom(plan["candidate"])
+                try:
+                    interface.localNode.writeChannel(index)
+                except Exception:
+                    channel.CopyFrom(original)
+                    raise
 
         self._add_event(
             "channel_config",
-            operation="update",
+            operation=plan["operation"],
             channel=index,
             role=role,
             name=name or "Primary",
-            psk_changed=effective_psk_mode != "unchanged",
+            psk_changed=plan["psk_changed"],
+            backup_id=backup["backup_id"],
+            preview_verified=True,
         )
-        return self.channel_slots()
+        return {
+            "channels": self.channel_slots(),
+            "applied": True,
+            "backup": backup,
+        }
 
     def _validated_message(
         self,

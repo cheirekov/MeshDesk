@@ -10,6 +10,9 @@ const state = {
   channels: [],
   channelSlots: [],
   activeChannelSlot: null,
+  channelPreview: null,
+  channelPreviewRequest: null,
+  channelPreviewApplying: false,
   unread: {},
   chatMessages: {},
   deliveryReceipts: {},
@@ -1293,6 +1296,7 @@ async function refreshStatus() {
 }
 
 function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastEvent) {
+  closeChannelPreview();
   state.chatMessages = {};
   state.deliveryReceipts = {};
   state.eventLog = [];
@@ -1324,6 +1328,7 @@ function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastE
 }
 
 async function activateProfile(profileId, eventSequence) {
+  closeChannelPreview();
   state.profileId = profileId;
   state.lastEvent = eventSequence || 0;
   state.chatMessages = {};
@@ -3624,7 +3629,8 @@ function renderChannelEditor(slot) {
       }
       <p class="channel-secret-note wide">
         Името и PSK трябва да съвпадат при всички участници. Ключът не се записва
-        в audit/history или browser storage. Clipboard-ът остава отговорност на оператора.
+        в plaintext audit/history или browser storage; pre-write backup-ът е AES-GCM
+        криптиран. Clipboard-ът остава отговорност на оператора.
       </p>
     </div>
     <div class="channel-editor-actions">
@@ -3779,27 +3785,114 @@ async function saveChannel(event) {
       return;
     }
   }
-  const pskLabel = $("#channelPskMode").selectedOptions[0]?.textContent || "";
-  const promptText = destructive
-    ? `Да премахна channel ${slot.index} „${slot.display_name}“? Следващите Secondary slots могат да бъдат пренаредени от firmware-а.`
-    : `Да запиша channel ${slot.index} с PSK режим „${pskLabel}“? Участниците с различно име/PSK няма да могат да го използват.`;
-  if (!confirm(promptText)) return;
+  const payload = {
+    role,
+    name: $("#channelName").value,
+    ...pskPayload,
+    uplink_enabled: $("#channelUplink").checked,
+    downlink_enabled: $("#channelDownlink").checked,
+    position_precision: Number($("#channelPositionPrecision").value || 0),
+  };
   try {
-    await api(`/api/channel-slots/${slot.index}`, {
+    const preview = await api(`/api/channel-slots/${slot.index}/preview`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    openChannelPreview(slot, payload, preview);
+  } catch (error) {
+    toast(`Channel preview ${slot.index}: ${error.message}`, true);
+  }
+}
+
+function channelPreviewValue(value) {
+  if (value === true) return "включено";
+  if (value === false) return "изключено";
+  return String(value ?? "—");
+}
+
+function openChannelPreview(slot, payload, preview) {
+  state.channelPreview = { ...preview, slot };
+  state.channelPreviewRequest = payload;
+  const changes = preview.changes || [];
+  $("#channelPreviewModalTitle").textContent =
+    preview.operation === "disable"
+      ? `Премахване на channel ${slot.index}`
+      : `Промяна на channel ${slot.index}`;
+  $("#channelPreviewSummary").textContent = preview.has_changes
+    ? `${changes.length} промени са валидирани. Preview token-ът е валиден ${preview.expires_in_seconds} секунди.`
+    : "Няма разлика между формата и текущото състояние на радиото.";
+  $("#channelPreviewChanges").innerHTML = changes.length
+    ? changes
+        .map(
+          (change) => `<div class="channel-preview-change ${escapeHtml(
+            change.severity || "normal",
+          )}">
+            <strong>${escapeHtml(change.label)}</strong>
+            <span><del>${escapeHtml(channelPreviewValue(change.before))}</del>
+              <b aria-hidden="true">→</b>
+              <ins>${escapeHtml(channelPreviewValue(change.after))}</ins></span>
+          </div>`,
+        )
+        .join("")
+    : '<p class="inspector-note">Няма промени за прилагане.</p>';
+  const warnings = preview.warnings || [];
+  $("#channelPreviewWarnings").innerHTML = warnings
+    .map(
+      (warning) => `<p class="channel-preview-warning ${escapeHtml(
+        warning.severity || "warning",
+      )}">${escapeHtml(warning.message)}</p>`,
+    )
+    .join("");
+  $("#confirmChannelPreview").disabled = !preview.has_changes;
+  $("#channelPreviewModal").classList.remove("hidden");
+  (preview.has_changes
+    ? $("#confirmChannelPreview")
+    : $("#cancelChannelPreview")
+  ).focus();
+}
+
+function closeChannelPreview(force = false) {
+  if (state.channelPreviewApplying && !force) return;
+  state.channelPreview = null;
+  state.channelPreviewRequest = null;
+  const modal = $("#channelPreviewModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function confirmChannelPreview() {
+  const preview = state.channelPreview;
+  const payload = state.channelPreviewRequest;
+  if (!preview || !payload || !preview.has_changes) return;
+  const button = $("#confirmChannelPreview");
+  state.channelPreviewApplying = true;
+  button.disabled = true;
+  button.textContent = "Backup и запис…";
+  $("#closeChannelPreview").disabled = true;
+  $("#cancelChannelPreview").disabled = true;
+  try {
+    const result = await api(`/api/channel-slots/${preview.slot.index}`, {
       method: "PUT",
       body: JSON.stringify({
-        role,
-        name: $("#channelName").value,
-        ...pskPayload,
-        uplink_enabled: $("#channelUplink").checked,
-        downlink_enabled: $("#channelDownlink").checked,
-        position_precision: Number($("#channelPositionPrecision").value || 0),
+        ...payload,
+        preview_token: preview.preview_token,
       }),
     });
+    const backupId = result.backup?.backup_id;
     await Promise.all([refreshChannelSlots(), refreshChannels()]);
-    toast(`Channel ${slot.index} е записан`);
+    toast(
+      backupId
+        ? `Channel ${preview.slot.index} е записан · encrypted backup ${backupId.slice(0, 8)}`
+        : `Channel ${preview.slot.index}: няма промени`,
+    );
   } catch (error) {
-    toast(`Channel ${slot.index}: ${error.message}`, true);
+    toast(`Channel ${preview.slot.index}: ${error.message}`, true);
+  } finally {
+    state.channelPreviewApplying = false;
+    button.textContent = "Създай backup и приложи";
+    button.disabled = false;
+    $("#closeChannelPreview").disabled = false;
+    $("#cancelChannelPreview").disabled = false;
+    closeChannelPreview(true);
   }
 }
 
@@ -4660,6 +4753,12 @@ $("#reloadChannels").addEventListener("click", () =>
   Promise.all([refreshChannelSlots(), refreshChannels()]),
 );
 $("#channelEditor").addEventListener("submit", saveChannel);
+$("#closeChannelPreview").addEventListener("click", () => closeChannelPreview());
+$("#cancelChannelPreview").addEventListener("click", () => closeChannelPreview());
+$("#confirmChannelPreview").addEventListener("click", confirmChannelPreview);
+$("#channelPreviewModal").addEventListener("click", (event) => {
+  if (event.target === $("#channelPreviewModal")) closeChannelPreview();
+});
 $("#reloadConfig").addEventListener("click", refreshConfig);
 $("#configTarget").addEventListener("change", async () => {
   state.activeConfig = null;
@@ -4711,6 +4810,13 @@ $("#closeInspector").addEventListener("click", closeInspector);
 $("#inspectorBackdrop").addEventListener("click", closeInspector);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") hideHelpTooltip();
+  if (
+    event.key === "Escape" &&
+    !$("#channelPreviewModal").classList.contains("hidden")
+  ) {
+    closeChannelPreview();
+    return;
+  }
   if (event.key === "Escape" && !$("#roleAdvisorModal").classList.contains("hidden")) {
     closeRoleAdvisor();
     return;

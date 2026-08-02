@@ -41,7 +41,8 @@ Channel editor-ът показва PSK само при изрично дейст
 - новият random/custom ключ има masked Base64 preview, reveal и copy;
 - custom стойността се валидира при писане и се въвежда повторно;
 - текущият записан ключ се зарежда с отделен `no-store` request;
-- стойността не се пази в local/session storage, audit или history;
+- стойността не се пази в local/session storage, plaintext audit или chat
+  history; pre-write backup-ът я съдържа само в AES-GCM криптиран protobuf;
 - hide, смяна на slot/tab, затваряне/скриване и disconnect премахват стойността
   от UI.
 

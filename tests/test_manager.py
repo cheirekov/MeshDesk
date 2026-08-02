@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import time
@@ -978,22 +979,20 @@ def test_channel_psk_is_revealed_only_by_explicit_method_without_audit_event():
     assert "psk_base64" not in manager.channel_slots()[0]
 
 
-def test_channel_manager_adds_updates_and_disables_secondary_channel():
+def test_channel_manager_adds_updates_and_disables_secondary_channel(tmp_path):
     manager, interface = connected_manager()
+    manager._history = EncryptedHistory(tmp_path / "logs", key=b"c" * 32)  # noqa: SLF001
     primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
     primary.settings.name = "Main"
+    primary.settings.psk = bytes(range(16))
     disabled = channel_pb2.Channel(index=1, role=channel_pb2.Channel.Role.DISABLED)
     interface.localNode.channels = [primary, disabled]
 
-    slots = manager.update_channel(
-        1,
-        "SECONDARY",
-        "Ops",
-        "random",
-        "",
-        True,
-        False,
-        12,
+    values = (1, "SECONDARY", "Ops", "random", "", True, False, 12)
+    preview = manager.preview_channel(*values)
+    result = manager.update_channel(
+        *values,
+        preview_token=preview["preview_token"],
     )
     secondary = interface.localNode.channels[1]
     assert secondary.Role.Name(secondary.role) == "SECONDARY"
@@ -1002,42 +1001,54 @@ def test_channel_manager_adds_updates_and_disables_secondary_channel():
     assert secondary.settings.uplink_enabled is True
     assert secondary.settings.module_settings.position_precision == 12
     assert interface.localNode.written[-1] == ("write_channel", 1)
-    assert slots[1]["enabled"] is True
+    assert result["channels"][1]["enabled"] is True
+    assert result["backup"]["encrypted"] is True
+    backups = manager._history.load_private(  # noqa: SLF001
+        "!87654321",
+        "channel-backups",
+    )
+    assert backups[-1]["target_channel"] == 1
+    assert len(backups[-1]["channels"]) == 2
+    saved_primary = channel_pb2.Channel()
+    saved_primary.ParseFromString(
+        base64.b64decode(backups[-1]["channels"][0]["protobuf_base64"])
+    )
+    assert saved_primary.settings.psk == bytes(range(16))
+    saved_secondary = channel_pb2.Channel()
+    saved_secondary.ParseFromString(
+        base64.b64decode(backups[-1]["channels"][1]["protobuf_base64"])
+    )
+    assert saved_secondary.Role.Name(saved_secondary.role) == "DISABLED"
+    ciphertext = (tmp_path / "logs" / "!87654321.channel-backups.aes").read_bytes()
+    assert b"protobuf_base64" not in ciphertext
 
+    disable_values = (1, "DISABLED", "Ops", "unchanged", "", False, False, 0)
+    disable_preview = manager.preview_channel(*disable_values)
     manager.update_channel(
-        1,
-        "DISABLED",
-        "Ops",
-        "unchanged",
-        "",
-        False,
-        False,
-        0,
+        *disable_values,
+        preview_token=disable_preview["preview_token"],
     )
     assert interface.localNode.written[-1] == ("delete_channel", 1)
     assert manager.channel_slots()[1]["enabled"] is False
 
 
-def test_channel_manager_accepts_simple_marker_and_custom_aes128():
+def test_channel_manager_accepts_simple_marker_and_custom_aes128(tmp_path):
     manager, interface = connected_manager()
+    manager._history = EncryptedHistory(tmp_path / "logs", key=b"c" * 32)  # noqa: SLF001
     primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
     primary.settings.name = "Main"
     interface.localNode.channels = [primary]
 
+    simple_values = (0, "PRIMARY", "Main", "custom", "simple15", False, False, 0)
+    simple_preview = manager.preview_channel(*simple_values)
     manager.update_channel(
-        0,
-        "PRIMARY",
-        "Main",
-        "custom",
-        "simple15",
-        False,
-        False,
-        0,
+        *simple_values,
+        preview_token=simple_preview["preview_token"],
     )
     assert interface.localNode.channels[0].settings.psk == b"\x10"
     assert manager.channel_slots()[0]["psk_state"] == "simple15"
 
-    manager.update_channel(
+    aes_values = (
         0,
         "PRIMARY",
         "Main",
@@ -1047,7 +1058,120 @@ def test_channel_manager_accepts_simple_marker_and_custom_aes128():
         False,
         0,
     )
+    aes_preview = manager.preview_channel(*aes_values)
+    manager.update_channel(
+        *aes_values,
+        preview_token=aes_preview["preview_token"],
+    )
     assert interface.localNode.channels[0].settings.psk == bytes(range(16))
+
+
+def test_channel_preview_hides_psk_and_rejects_changed_radio_state():
+    manager, interface = connected_manager()
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.name = "Main"
+    interface.localNode.channels = [primary]
+    values = (
+        0,
+        "PRIMARY",
+        "Private",
+        "custom",
+        "base64:AAECAwQFBgcICQoLDA0ODw==",
+        False,
+        False,
+        0,
+    )
+
+    preview = manager.preview_channel(*values)
+
+    assert preview["has_changes"] is True
+    assert "AAECAwQFBgcICQoLDA0ODw" not in json.dumps(preview)
+    psk_change = next(item for item in preview["changes"] if item["field"] == "psk")
+    assert psk_change["after"] == "secret AES-128"
+    primary.settings.name = "Changed elsewhere"
+    with pytest.raises(ValueError, match="state changed after preview"):
+        manager.update_channel(*values, preview_token=preview["preview_token"])
+
+
+def test_channel_preview_detects_same_size_secret_replacement():
+    manager, interface = connected_manager()
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.name = "Main"
+    primary.settings.psk = bytes(range(16))
+    interface.localNode.channels = [primary]
+
+    preview = manager.preview_channel(
+        0,
+        "PRIMARY",
+        "Main",
+        "custom",
+        "base64:EBESExQVFhcYGRobHB0eHw==",
+        False,
+        False,
+        0,
+    )
+
+    assert preview["has_changes"] is True
+    assert preview["changes"] == [
+        {
+            "field": "psk",
+            "label": "PSK",
+            "before": "secret AES-128",
+            "after": "secret AES-128 (нов ключ)",
+            "severity": "sensitive",
+        }
+    ]
+
+
+def test_channel_write_requires_matching_one_time_preview(tmp_path):
+    manager, interface = connected_manager()
+    manager._history = EncryptedHistory(tmp_path / "logs", key=b"c" * 32)  # noqa: SLF001
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.name = "Main"
+    interface.localNode.channels = [primary]
+    values = (0, "PRIMARY", "NewName", "unchanged", "", False, False, 0)
+
+    with pytest.raises(ValueError, match="preview is required"):
+        manager.update_channel(*values)
+    preview = manager.preview_channel(*values)
+    with pytest.raises(ValueError, match="request changed after preview"):
+        manager.update_channel(
+            0,
+            "PRIMARY",
+            "Different",
+            "unchanged",
+            "",
+            False,
+            False,
+            0,
+            preview_token=preview["preview_token"],
+        )
+    with pytest.raises(ValueError, match="preview expired"):
+        manager.update_channel(*values, preview_token=preview["preview_token"])
+
+
+def test_channel_backup_is_persisted_before_failed_radio_write(tmp_path):
+    manager, interface = connected_manager()
+    history = EncryptedHistory(tmp_path / "logs", key=b"c" * 32)
+    manager._history = history  # noqa: SLF001
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.name = "Main"
+    primary.settings.psk = bytes(range(16))
+    interface.localNode.channels = [primary]
+    values = (0, "PRIMARY", "NewName", "unchanged", "", False, False, 0)
+    preview = manager.preview_channel(*values)
+
+    def fail_write(_index):
+        raise RuntimeError("radio write failed")
+
+    interface.localNode.writeChannel = fail_write
+    with pytest.raises(RuntimeError, match="radio write failed"):
+        manager.update_channel(*values, preview_token=preview["preview_token"])
+
+    backups = history.load_private("!87654321", "channel-backups")
+    assert len(backups) == 1
+    assert backups[0]["operation"] == "update"
+    assert primary.settings.name == "Main"
 
 
 def test_config_schema_hides_secret_and_updates_section():

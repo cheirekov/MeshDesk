@@ -136,6 +136,7 @@ class ChannelUpdateRequest(BaseModel):
     uplink_enabled: bool = False
     downlink_enabled: bool = False
     position_precision: int = Field(default=0, ge=0, le=32)
+    preview_token: str | None = Field(default=None, min_length=32, max_length=64)
 
 
 def create_app(
@@ -416,18 +417,38 @@ def create_app(
     @api.put("/api/channel-slots/{index}")
     def update_channel(index: int, request: ChannelUpdateRequest) -> dict:
         try:
-            return {
-                "channels": radio.update_channel(
-                    index,
-                    request.role,
-                    request.name,
-                    request.psk_mode,
-                    request.psk,
-                    request.uplink_enabled,
-                    request.downlink_enabled,
-                    request.position_precision,
-                )
-            }
+            return radio.update_channel(
+                index,
+                request.role,
+                request.name,
+                request.psk_mode,
+                request.psk,
+                request.uplink_enabled,
+                request.downlink_enabled,
+                request.position_precision,
+                request.preview_token,
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc) or type(exc).__name__,
+            ) from exc
+
+    @api.post("/api/channel-slots/{index}/preview")
+    def preview_channel(index: int, request: ChannelUpdateRequest) -> dict:
+        try:
+            return radio.preview_channel(
+                index,
+                request.role,
+                request.name,
+                request.psk_mode,
+                request.psk,
+                request.uplink_enabled,
+                request.downlink_enabled,
+                request.position_precision,
+            )
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:

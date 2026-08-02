@@ -130,7 +130,10 @@ disabled. От нея могат да се добавят, редактират 
 да се промени името, MQTT uplink/downlink и position precision, както и да се
 запази или замени PSK. Ключът е скрит по подразбиране, но може да бъде показан
 и копиран чрез explicit `no-store` reveal за локално свързаното радио. Не се
-записва в browser storage, audit events или history logs. Slot 0 остава PRIMARY,
+записва в browser storage, plaintext audit events или chat history. Преди всеки
+реален write MeshDesk показва backend-валидирания diff и изисква отделно
+потвърждение. След него, но преди промяната, всички channel protobuf-и и PSK
+bytes се запазват в AES-GCM криптиран snapshot под `logs/`. Slot 0 остава PRIMARY,
 а нов Secondary се добавя само в първия свободен slot. Подробности:
 [Channel Manager](docs/CHANNEL-MANAGER.md).
 

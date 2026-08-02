@@ -69,6 +69,11 @@ def test_saved_connection_profiles_are_available_in_connection_panel() -> None:
     assert "Remote administration: достъпът е отказан" in script.text
     assert "ADMIN_PUBLIC_KEY_UNAUTHORIZED" in script.text
     assert "config-capability-notice" in script.text
+    assert 'id="channelPreviewModal"' in page.text
+    assert 'id="confirmChannelPreview"' in page.text
+    assert "/preview`" in script.text
+    assert "openChannelPreview" in script.text
+    assert "Създай backup и приложи" in page.text
 
 
 def test_configuration_has_contextual_guidance() -> None:

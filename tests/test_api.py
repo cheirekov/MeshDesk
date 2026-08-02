@@ -97,6 +97,7 @@ class StubManager:
         uplink,
         downlink,
         position_precision,
+        preview_token,
     ):
         self.calls.append(
             (
@@ -109,9 +110,29 @@ class StubManager:
                 uplink,
                 downlink,
                 position_precision,
+                preview_token,
             )
         )
-        return self.channel_slots()
+        return {"channels": self.channel_slots(), "applied": True, "backup": {}}
+
+    def preview_channel(
+        self,
+        index,
+        role,
+        name,
+        psk_mode,
+        psk,
+        uplink,
+        downlink,
+        position_precision,
+    ):
+        self.calls.append(("channel_preview", index, role, name, psk_mode))
+        return {
+            "preview_token": "a" * 32,
+            "has_changes": True,
+            "changes": [],
+            "warnings": [],
+        }
 
     def events(self, after):
         return [{"seq": after + 1}]
@@ -494,8 +515,8 @@ def test_channel_manager_endpoints():
     with TestClient(create_app(manager)) as client:
         listing = client.get("/api/channel-slots")
         revealed = client.get("/api/channel-slots/0/psk")
-        updated = client.put(
-            "/api/channel-slots/1",
+        preview = client.post(
+            "/api/channel-slots/1/preview",
             json={
                 "role": "SECONDARY",
                 "name": "Ops",
@@ -505,6 +526,18 @@ def test_channel_manager_endpoints():
                 "position_precision": 12,
             },
         )
+        updated = client.put(
+            "/api/channel-slots/1",
+            json={
+                "role": "SECONDARY",
+                "name": "Ops",
+                "psk_mode": "random",
+                "uplink_enabled": True,
+                "downlink_enabled": False,
+                "position_precision": 12,
+                "preview_token": preview.json()["preview_token"],
+            },
+        )
 
     assert listing.status_code == 200
     assert listing.json()["channels"][0]["role"] == "PRIMARY"
@@ -512,9 +545,17 @@ def test_channel_manager_endpoints():
     assert revealed.json()["psk_base64"] == "AQ=="
     assert revealed.headers["cache-control"] == "no-store, max-age=0"
     assert revealed.headers["pragma"] == "no-cache"
+    assert preview.status_code == 200
     assert updated.status_code == 200
     assert manager.calls[0] == ("channel_psk", 0)
     assert manager.calls[1] == (
+        "channel_preview",
+        1,
+        "SECONDARY",
+        "Ops",
+        "random",
+    )
+    assert manager.calls[2] == (
         "channel",
         1,
         "SECONDARY",
@@ -524,6 +565,7 @@ def test_channel_manager_endpoints():
         True,
         False,
         12,
+        "a" * 32,
     )
 
 

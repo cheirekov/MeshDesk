@@ -56,7 +56,7 @@ result model.
 - [x] PRIMARY/SECONDARY правила и предварителна валидация.
 - [x] Генериране/въвеждане на PSK без показване в логовете.
 - [ ] Channel URL и QR import/export.
-- [ ] Preview и backup преди запис.
+- [x] Backend-validated preview и encrypted backup преди запис.
 - [ ] Remote channel administration при поддържан firmware.
 
 Критерий: каналите могат да се управляват безопасно, без CLI или Android.

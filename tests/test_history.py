@@ -26,3 +26,20 @@ def test_encrypted_history_generates_private_local_key(tmp_path):
     key_path = directory / ".history.key"
     assert len(key_path.read_bytes()) == 32
     assert key_path.stat().st_mode & 0o077 == 0
+
+
+def test_private_records_are_encrypted_and_namespaced(tmp_path):
+    history = EncryptedHistory(tmp_path / "logs", key=b"k" * 32)
+    backup = {
+        "backup_id": "backup-1",
+        "channels": [{"protobuf_base64": "very-secret-channel-key"}],
+    }
+
+    history.append_private("!11111111", "channel-backups", backup)
+
+    assert history.load_private("!11111111", "channel-backups") == [backup]
+    assert history.load_private("!11111111", "other-records") == []
+    ciphertext = (
+        tmp_path / "logs" / "!11111111.channel-backups.aes"
+    ).read_bytes()
+    assert b"very-secret-channel-key" not in ciphertext

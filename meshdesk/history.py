@@ -71,6 +71,18 @@ class EncryptedHistory:
         return self.directory / f"{self._safe_profile(profile_id)}.events.aes"
 
     @staticmethod
+    def _safe_namespace(namespace: str) -> str:
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,47}", namespace):
+            raise ValueError("Invalid encrypted record namespace")
+        return namespace
+
+    def _private_path(self, profile_id: str, namespace: str) -> Path:
+        return self.directory / (
+            f"{self._safe_profile(profile_id)}."
+            f"{self._safe_namespace(namespace)}.aes"
+        )
+
+    @staticmethod
     def _aad(profile_id: str) -> bytes:
         return f"meshdesk-history-v{HISTORY_VERSION}:{profile_id}".encode()
 
@@ -111,3 +123,52 @@ class EncryptedHistory:
             except Exception:
                 logger.warning("Skipping an unreadable MeshDesk history record in %s", path)
         return events
+
+    def append_private(
+        self,
+        profile_id: str,
+        namespace: str,
+        record: dict[str, Any],
+    ) -> None:
+        """Append an encrypted non-event document in a separate namespace."""
+        namespace = self._safe_namespace(namespace)
+        payload = json.dumps(
+            {"version": HISTORY_VERSION, "record": record},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+        nonce = secrets.token_bytes(12)
+        aad = f"meshdesk-private-v{HISTORY_VERSION}:{namespace}:{profile_id}".encode()
+        encrypted = nonce + self._cipher.encrypt(nonce, payload, aad)
+        line = base64.urlsafe_b64encode(encrypted) + b"\n"
+        path = self._private_path(profile_id, namespace)
+        with self._lock:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(descriptor, line)
+            finally:
+                os.close(descriptor)
+
+    def load_private(self, profile_id: str, namespace: str) -> list[dict[str, Any]]:
+        """Load encrypted non-event documents from a separate namespace."""
+        namespace = self._safe_namespace(namespace)
+        path = self._private_path(profile_id, namespace)
+        if not path.exists():
+            return []
+        with self._lock:
+            lines = path.read_bytes().splitlines()[-self.limit :]
+        records = []
+        aad = f"meshdesk-private-v{HISTORY_VERSION}:{namespace}:{profile_id}".encode()
+        for line in lines:
+            try:
+                encrypted = base64.urlsafe_b64decode(line)
+                nonce, ciphertext = encrypted[:12], encrypted[12:]
+                payload = self._cipher.decrypt(nonce, ciphertext, aad)
+                document = json.loads(payload)
+                if document.get("version") == HISTORY_VERSION and isinstance(
+                    document.get("record"), dict
+                ):
+                    records.append(document["record"])
+            except Exception:
+                logger.warning("Skipping an unreadable encrypted record in %s", path)
+        return records

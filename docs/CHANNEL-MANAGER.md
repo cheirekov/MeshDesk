@@ -19,8 +19,10 @@ Secondary канали**, отделно от protobuf radio/module формат
 Обикновеният channel list никога не съдържа PSK. UI получава само състояние:
 `unencrypted`, `default`, `simpleN` или `secret`. При изрично
 **Покажи текущия PSK** локалният API връща Base64 стойността с `no-store`;
-стойността не се audit-ва, не влиза в history и се изчиства при hide, смяна на
-slot/tab, затваряне на Settings, скриване на browser прозореца или disconnect.
+reveal отговорът не се audit-ва, не влиза в chat history и се изчиства при
+hide, смяна на slot/tab, затваряне на Settings, скриване на browser прозореца
+или disconnect. Единственото съхранение на PSK е криптираният pre-write backup,
+описан по-долу.
 
 При запис операторът избира:
 
@@ -35,18 +37,40 @@ slot/tab, затваряне на Settings, скриване на browser про
 Random ключовете се генерират с Web Crypto CSPRNG и се показват като Base64
 preview преди save. Има show/hide, regenerate, live size validation и copy.
 Новият ключ трябва да се приложи отделно на всички участници. MeshDesk не го
-записва в audit събитията, browser storage или encrypted chat history.
+записва в plaintext audit събитията, browser storage или encrypted chat history.
+Той присъства единствено в отделния encrypted pre-write backup, необходим за
+бъдещо възстановяване.
 
 `default` и `simpleN` не са private: ключовете им са публикувани в Meshtastic
 source и служат за public/test channels. Еднобайтовата стойност е protocol
 marker, а не реален еднобайтов AES key.
 
-## Граници на първата версия
+## Preview и backup преди write
+
+**Запиши channel** първо изпраща параметрите към preview endpoint. Backend-ът:
+
+1. прилага същата validation логика като реалния write;
+2. връща diff без PSK bytes;
+3. добавя предупреждения за public/open PSK, MQTT и slot deletion;
+4. издава еднократен token с петминутен срок, свързан с request digest и
+   fingerprint на всички текущи channel slots.
+
+При потвърждение token-ът се консумира. Променена форма, изтекъл token или
+channel state, различен от прегледания, отказват write и изискват нов preview.
+Точно преди write се създава пълен protobuf snapshot на всички slots. Той
+съдържа PSK bytes, затова се пази отделно като
+`logs/<node-id>.channel-backups.aes`, криптиран с AES-GCM и локалния MeshDesk
+history key. Backup ID влиза в audit резултата, но съдържанието и ключовете не.
+
+Snapshot restore UI предстои; дотогава backup-ът е recovery artifact, а не
+автоматичен rollback.
+
+## Оставащи граници
 
 - управлява директно свързаното радио;
 - няма remote channel administration;
 - няма Channel URL/QR import/export;
 - няма explicit drag-and-drop reorder;
-- преди запис има confirmation, но пълният snapshot/rollback предстои.
+- encrypted snapshot се създава, но restore/rollback UI предстои.
 
 Тези функции остават в M2 roadmap-а.
