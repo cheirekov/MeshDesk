@@ -78,6 +78,10 @@ class RemoteConfigRequest(BaseModel):
     section: str
 
 
+class RemoteChannelsRequest(BaseModel):
+    node_id: str
+
+
 class CapabilityRequest(BaseModel):
     node_id: str | None = None
 
@@ -137,6 +141,7 @@ class ChannelUpdateRequest(BaseModel):
     downlink_enabled: bool = False
     position_precision: int = Field(default=0, ge=0, le=32)
     preview_token: str | None = Field(default=None, min_length=32, max_length=64)
+    node_id: str | None = None
 
 
 def create_app(
@@ -393,14 +398,20 @@ def create_app(
         return {"channels": radio.channels()}
 
     @api.get("/api/channel-slots")
-    def channel_slots() -> dict:
-        return {"channels": radio.channel_slots()}
+    def channel_slots(node_id: str | None = Query(default=None)) -> dict:
+        try:
+            return {"channels": radio.channel_slots(node_id)}
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api.get("/api/channel-slots/{index}/psk", include_in_schema=False)
-    def channel_psk(index: int) -> JSONResponse:
+    def channel_psk(
+        index: int,
+        node_id: str | None = Query(default=None),
+    ) -> JSONResponse:
         try:
             return JSONResponse(
-                radio.channel_psk(index),
+                radio.channel_psk(index, node_id),
                 headers={
                     "Cache-Control": "no-store, max-age=0",
                     "Pragma": "no-cache",
@@ -427,6 +438,7 @@ def create_app(
                 request.downlink_enabled,
                 request.position_precision,
                 request.preview_token,
+                request.node_id,
             )
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -448,7 +460,30 @@ def create_app(
                 request.uplink_enabled,
                 request.downlink_enabled,
                 request.position_precision,
+                request.node_id,
             )
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc) or type(exc).__name__,
+            ) from exc
+
+    @api.post("/api/remote-admin/channels", status_code=202)
+    def request_remote_channels(request: RemoteChannelsRequest) -> dict:
+        try:
+            return radio.request_remote_channels(request.node_id)
+        except CapabilityUnsupportedError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "capability_unsupported",
+                    "operation": exc.operation,
+                    "node_id": exc.node_id,
+                    "reason": exc.reason,
+                },
+            ) from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:

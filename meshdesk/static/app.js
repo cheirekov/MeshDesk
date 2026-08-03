@@ -10,6 +10,7 @@ const state = {
   channels: [],
   channelSlots: [],
   activeChannelSlot: null,
+  channelTargetLoading: false,
   channelPreview: null,
   channelPreviewRequest: null,
   channelPreviewApplying: false,
@@ -102,7 +103,9 @@ function selectSettingsView(view) {
   $("#settingsConfigTab").tabIndex = channels ? -1 : 0;
   $("#settingsChannelsTab").tabIndex = channels ? 0 : -1;
   if (channels && state.connection === "connected") {
-    Promise.all([refreshChannelSlots(), refreshChannels()]);
+    if (!$("#channelTarget").value) {
+      Promise.all([refreshChannelSlots(), refreshChannels()]);
+    }
   }
 }
 
@@ -1091,6 +1094,8 @@ function updateControls(status) {
   $("#newDirectButton").disabled = !connected;
   $("#refreshNodes").disabled = !connected;
   $("#reloadChannels").disabled = !connected;
+  $("#channelTarget").disabled = !connected;
+  $("#loadRemoteChannels").disabled = !connected || state.channelTargetLoading;
   $("#reloadConfig").disabled = !connected;
   $("#configTarget").disabled = !connected;
   $("#exportConfig").disabled = !connected;
@@ -1307,6 +1312,7 @@ function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastE
   state.channels = [];
   state.channelSlots = [];
   state.activeChannelSlot = null;
+  state.channelTargetLoading = false;
   state.configSections = [];
   state.activeConfig = null;
   state.lastEvent = Math.max(state.lastEvent, eventSequence || 0);
@@ -1314,6 +1320,7 @@ function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastE
   if (state.inspector) closeInspector();
   $("#configTarget").value = "";
   $("#adminTarget").value = "";
+  $("#channelTarget").value = "";
   $("#remoteConfigControls").classList.add("hidden");
   $("#configPanel").open = false;
   $("#adminPanel").open = false;
@@ -1341,6 +1348,7 @@ async function activateProfile(profileId, eventSequence) {
   state.channels = [];
   state.channelSlots = [];
   state.activeChannelSlot = null;
+  state.channelTargetLoading = false;
   state.readThrough = 0;
   $("#events").className = "events empty-state";
   $("#events").textContent = "Все още няма събития.";
@@ -1810,7 +1818,43 @@ function fillConfigTargets() {
     select.value = current;
   }
   $("#remoteConfigControls").classList.toggle("hidden", !select.value);
+  fillChannelTargets();
   fillAdminTargets();
+}
+
+function fillChannelTargets() {
+  const select = $("#channelTarget");
+  const current = select.value;
+  select.innerHTML = `<option value="">Локално: ${escapeHtml(
+    state.status?.profile_name || state.profileId || "радио",
+  )}</option>`;
+  state.nodes
+    .filter((node) => !node.is_self && node.id?.toLowerCase() !== state.profileId?.toLowerCase())
+    .forEach((node) => {
+      select.add(
+        new Option(
+          `Remote: ${node.long_name} (${node.short_name}) · ${node.id}`,
+          node.id,
+        ),
+      );
+    });
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+  updateChannelTargetUi();
+}
+
+function updateChannelTargetUi() {
+  const nodeId = $("#channelTarget").value;
+  const remote = Boolean(nodeId);
+  $("#loadRemoteChannels").classList.toggle("hidden", !remote);
+  $("#loadRemoteChannels").disabled =
+    state.connection !== "connected" || state.channelTargetLoading;
+  $("#reloadChannels").classList.toggle("hidden", remote);
+  $("#channelTargetHint").classList.toggle("remote", remote);
+  $("#channelTargetHint").textContent = remote
+    ? "Каналите не се четат автоматично. Зареди ги изрично през LoRa; операцията изпраща до 8 последователни PKI admin заявки."
+    : "Редактираш директно свързаното радио.";
 }
 
 function fillAdminTargets() {
@@ -2553,6 +2597,7 @@ function operationLabel(event) {
   if (event.operation === "ignore") return "Игнориране на възел";
   if (event.operation === "unignore") return "Спиране на игнорирането";
   if (event.operation === "remote_config") return "Remote configuration";
+  if (event.operation === "remote_channels") return "Remote channels";
   if (event.operation === "history_replay") return "Синхронизация на историята";
   if (event.operation === "administration") {
     const labels = {
@@ -2584,6 +2629,8 @@ function operationResultHtml(event) {
     body =
       event.operation === "capabilities"
         ? "<p>Изпратена е PKI admin заявка за DeviceMetadata.</p>"
+        : event.operation === "remote_channels"
+          ? "<p>Изпратени са последователни PKI admin заявки за channel slots 0–7.</p>"
         : event.operation === "history_replay"
         ? `<p>Поискани до ${escapeHtml(event.max_messages)} съобщения за ${
             escapeHtml(event.window)
@@ -2635,6 +2682,12 @@ function operationResultHtml(event) {
     body = neighborInfoHtml(event.result?.neighbor_info, event);
   } else if (event.operation === "remote_config") {
     body = `<p>Секция „${escapeHtml(event.section)}“ е заредена чрез PKI admin.</p>`;
+  } else if (event.operation === "remote_channels") {
+    body = `<p>Заредени са ${escapeHtml(
+      event.result?.channel_count ?? 0,
+    )} slots · ${escapeHtml(event.result?.active_channels ?? 0)} активни.${
+      event.result?.session_refreshed ? " Admin session key беше подновен." : ""
+    }</p>`;
   } else if (event.operation === "administration") {
     body = `<p>Командата е изпратена към устройството.${
       event.result?.restored_preferences
@@ -3458,7 +3511,9 @@ async function revealCurrentChannelPsk(slot) {
     return;
   }
   try {
-    const data = await api(`/api/channel-slots/${slot.index}/psk`, {
+    const nodeId = $("#channelTarget").value;
+    const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
+    const data = await api(`/api/channel-slots/${slot.index}/psk${query}`, {
       cache: "no-store",
     });
     input.value = data.psk_base64;
@@ -3729,10 +3784,37 @@ function renderChannelSlots(slots) {
 
 async function refreshChannelSlots() {
   try {
-    const { channels } = await api("/api/channel-slots");
+    const nodeId = $("#channelTarget").value;
+    const query = nodeId ? `?node_id=${encodeURIComponent(nodeId)}` : "";
+    const { channels } = await api(`/api/channel-slots${query}`);
     renderChannelSlots(channels);
   } catch (error) {
     toast(`Channel Manager: ${error.message}`, true);
+  }
+}
+
+async function loadRemoteChannels() {
+  const nodeId = $("#channelTarget").value;
+  if (!nodeId || state.channelTargetLoading) return;
+  state.channelTargetLoading = true;
+  const button = $("#loadRemoteChannels");
+  button.disabled = true;
+  button.textContent = "Заявяване…";
+  $("#channelTargetHint").textContent =
+    "Заявката е приета. Изчакват се channel slots последователно; това може да отнеме няколко минути при слаб маршрут.";
+  try {
+    await api("/api/remote-admin/channels", {
+      method: "POST",
+      body: JSON.stringify({ node_id: nodeId }),
+    });
+    renderChannelSlots([]);
+    $("#channelSlotList").textContent = "Зареждане на remote channel slots…";
+  } catch (error) {
+    state.channelTargetLoading = false;
+    updateChannelTargetUi();
+    toast(`Remote channels: ${error.message}`, true);
+  } finally {
+    if (!state.channelTargetLoading) button.textContent = "Зареди през LoRa";
   }
 }
 
@@ -3786,6 +3868,7 @@ async function saveChannel(event) {
     }
   }
   const payload = {
+    node_id: $("#channelTarget").value || null,
     role,
     name: $("#channelName").value,
     ...pskPayload,
@@ -3816,8 +3899,8 @@ function openChannelPreview(slot, payload, preview) {
   const changes = preview.changes || [];
   $("#channelPreviewModalTitle").textContent =
     preview.operation === "disable"
-      ? `Премахване на channel ${slot.index}`
-      : `Промяна на channel ${slot.index}`;
+      ? `Премахване на channel ${slot.index}${preview.remote ? " · REMOTE" : ""}`
+      : `Промяна на channel ${slot.index}${preview.remote ? " · REMOTE" : ""}`;
   $("#channelPreviewSummary").textContent = preview.has_changes
     ? `${changes.length} промени са валидирани. Preview token-ът е валиден ${preview.expires_in_seconds} секунди.`
     : "Няма разлика между формата и текущото състояние на радиото.";
@@ -3878,11 +3961,18 @@ async function confirmChannelPreview() {
       }),
     });
     const backupId = result.backup?.backup_id;
-    await Promise.all([refreshChannelSlots(), refreshChannels()]);
+    await refreshChannelSlots();
+    if (!result.remote) await refreshChannels();
+    const verification = result.verification?.verified
+      ? " · проверено чрез повторно прочитане"
+      : result.remote
+        ? " · ACK получен, но повторната проверка не е завършила"
+        : "";
     toast(
       backupId
-        ? `Channel ${preview.slot.index} е записан · encrypted backup ${backupId.slice(0, 8)}`
+        ? `Channel ${preview.slot.index} е записан · encrypted backup ${backupId.slice(0, 8)}${verification}`
         : `Channel ${preview.slot.index}: няма промени`,
+      result.remote && !result.verification?.verified,
     );
   } catch (error) {
     toast(`Channel ${preview.slot.index}: ${error.message}`, true);
@@ -4582,6 +4672,29 @@ function appendEvents(events, { historical = false } = {}) {
   ) {
     setTimeout(refreshConfig, 250);
   }
+  const remoteChannelResult = !historical
+    ? events.find(
+        (event) =>
+          event.kind === "operation_result" &&
+          event.operation === "remote_channels" &&
+          event.target?.toLowerCase() === $("#channelTarget").value.toLowerCase(),
+      )
+    : null;
+  if (remoteChannelResult) {
+    state.channelTargetLoading = false;
+    $("#loadRemoteChannels").textContent = "Зареди отново";
+    updateChannelTargetUi();
+    if (remoteChannelResult.success) {
+      $("#channelTargetHint").textContent =
+        "Remote snapshot-ът е зареден. След write MeshDesk изчаква ACK и проверява променените slots чрез повторно прочитане.";
+      setTimeout(refreshChannelSlots, 250);
+    } else {
+      renderChannelSlots([]);
+      $("#channelSlotList").textContent = "Remote channel заявката не успя.";
+      $("#channelTargetHint").textContent =
+        remoteChannelResult.error || "Remote възелът не върна channel slots.";
+    }
+  }
   if (state.inspector) renderInspector();
   while (container.children.length > 100) container.lastElementChild.remove();
 }
@@ -4752,6 +4865,22 @@ document.addEventListener("visibilitychange", () => {
 $("#reloadChannels").addEventListener("click", () =>
   Promise.all([refreshChannelSlots(), refreshChannels()]),
 );
+$("#loadRemoteChannels").addEventListener("click", loadRemoteChannels);
+$("#channelTarget").addEventListener("change", async () => {
+  closeChannelPreview();
+  clearCurrentChannelPskReveal();
+  state.channelTargetLoading = false;
+  state.channelSlots = [];
+  state.activeChannelSlot = null;
+  updateChannelTargetUi();
+  if ($("#channelTarget").value) {
+    renderChannelSlots([]);
+    $("#channelSlotList").textContent =
+      "Натисни „Зареди през LoRa“, за да прочетеш remote channel slots.";
+  } else {
+    await refreshChannelSlots();
+  }
+});
 $("#channelEditor").addEventListener("submit", saveChannel);
 $("#closeChannelPreview").addEventListener("click", () => closeChannelPreview());
 $("#cancelChannelPreview").addEventListener("click", () => closeChannelPreview());

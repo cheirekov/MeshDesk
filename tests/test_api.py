@@ -66,7 +66,8 @@ class StubManager:
     def channels(self):
         return []
 
-    def channel_slots(self):
+    def channel_slots(self, node_id=None):
+        self.calls.append(("channel_slots", node_id))
         return [
             {
                 "index": 0,
@@ -76,8 +77,8 @@ class StubManager:
             }
         ]
 
-    def channel_psk(self, index):
-        self.calls.append(("channel_psk", index))
+    def channel_psk(self, index, node_id=None):
+        self.calls.append(("channel_psk", index, node_id))
         return {
             "index": index,
             "psk_base64": "AQ==",
@@ -98,6 +99,7 @@ class StubManager:
         downlink,
         position_precision,
         preview_token,
+        node_id=None,
     ):
         self.calls.append(
             (
@@ -111,9 +113,10 @@ class StubManager:
                 downlink,
                 position_precision,
                 preview_token,
+                node_id,
             )
         )
-        return {"channels": self.channel_slots(), "applied": True, "backup": {}}
+        return {"channels": self.channel_slots(node_id), "applied": True, "backup": {}}
 
     def preview_channel(
         self,
@@ -125,8 +128,9 @@ class StubManager:
         uplink,
         downlink,
         position_precision,
+        node_id=None,
     ):
-        self.calls.append(("channel_preview", index, role, name, psk_mode))
+        self.calls.append(("channel_preview", index, role, name, psk_mode, node_id))
         return {
             "preview_token": "a" * 32,
             "has_changes": True,
@@ -168,6 +172,10 @@ class StubManager:
 
     def request_remote_config(self, node_id, section):
         self.calls.append(("remote_config", node_id, section))
+
+    def request_remote_channels(self, node_id):
+        self.calls.append(("remote_channels", node_id))
+        return {"status": "requested", "node_id": node_id}
 
     def request_history_replay(self, window, maximum):
         self.calls.append(("history_replay", window, maximum))
@@ -547,15 +555,17 @@ def test_channel_manager_endpoints():
     assert revealed.headers["pragma"] == "no-cache"
     assert preview.status_code == 200
     assert updated.status_code == 200
-    assert manager.calls[0] == ("channel_psk", 0)
-    assert manager.calls[1] == (
+    assert manager.calls[0] == ("channel_slots", None)
+    assert manager.calls[1] == ("channel_psk", 0, None)
+    assert manager.calls[2] == (
         "channel_preview",
         1,
         "SECONDARY",
         "Ops",
         "random",
+        None,
     )
-    assert manager.calls[2] == (
+    assert manager.calls[3] == (
         "channel",
         1,
         "SECONDARY",
@@ -566,7 +576,46 @@ def test_channel_manager_endpoints():
         False,
         12,
         "a" * 32,
+        None,
     )
+
+
+def test_remote_channel_manager_endpoints_include_target():
+    manager = StubManager()
+    with TestClient(create_app(manager)) as client:
+        requested = client.post(
+            "/api/remote-admin/channels",
+            json={"node_id": "!12345678"},
+        )
+        listing = client.get("/api/channel-slots?node_id=!12345678")
+        revealed = client.get(
+            "/api/channel-slots/0/psk?node_id=!12345678"
+        )
+        preview = client.post(
+            "/api/channel-slots/0/preview",
+            json={
+                "node_id": "!12345678",
+                "role": "PRIMARY",
+                "name": "Remote",
+                "psk_mode": "unchanged",
+            },
+        )
+
+    assert requested.status_code == 202
+    assert listing.status_code == 200
+    assert revealed.status_code == 200
+    assert preview.status_code == 200
+    assert ("remote_channels", "!12345678") in manager.calls
+    assert ("channel_slots", "!12345678") in manager.calls
+    assert ("channel_psk", 0, "!12345678") in manager.calls
+    assert (
+        "channel_preview",
+        0,
+        "PRIMARY",
+        "Remote",
+        "unchanged",
+        "!12345678",
+    ) in manager.calls
 
 
 def test_history_and_remote_config_endpoints():

@@ -106,6 +106,7 @@ DEFAULT_RECONNECT_STABLE_SECONDS = 10.0
 DEFAULT_BLE_HEALTH_POLL_SECONDS = 2.0
 CHANNEL_PREVIEW_TTL_SECONDS = 300
 CHANNEL_BACKUP_NAMESPACE = "channel-backups"
+REMOTE_CHANNEL_RESPONSE_TIMEOUT_SECONDS = 45
 RECONNECT_ELIGIBLE_REASONS = {
     "connection_lost",
     "timeout",
@@ -260,6 +261,7 @@ class MeshtasticManager:
         self._history_directory = Path(history_directory)
         self._remote_nodes: dict[str, Any] = {}
         self._remote_loaded_sections: dict[str, set[str]] = {}
+        self._remote_channels_loaded: set[str] = set()
         self._remote_capabilities: dict[str, dict[str, Any]] = {}
         self._channel_previews: dict[str, dict[str, Any]] = {}
         self._channel_preview_key = secrets.token_bytes(32)
@@ -449,6 +451,7 @@ class MeshtasticManager:
                 self._profile_name = None
             self._remote_nodes = {}
             self._remote_loaded_sections = {}
+            self._remote_channels_loaded = set()
             self._remote_capabilities = {}
             self._channel_previews = {}
             self._history_replay_requested_at = None
@@ -872,12 +875,24 @@ class MeshtasticManager:
             for device in BLEInterface.scan()
         ]
 
-    def channels(self) -> list[dict[str, Any]]:
+    def _channel_node(self, node_id: str | None = None) -> tuple[Any, str | None]:
+        interface = self._connected_interface()
+        if not node_id:
+            return interface.localNode, None
+        node_id = self._validate_node_destination(node_id).lower()
         with self._lock:
-            interface = self._interface
-            if interface is None:
-                return []
-            raw_channels = list(interface.localNode.channels or [])
+            remote = self._remote_nodes.get(node_id)
+            loaded = node_id in self._remote_channels_loaded
+        if remote is None or not loaded or remote.channels is None:
+            raise RuntimeError(
+                "Remote channels are not loaded; use 'Зареди през LoRa' first"
+            )
+        return remote, node_id
+
+    def channels(self, node_id: str | None = None) -> list[dict[str, Any]]:
+        channel_node, _ = self._channel_node(node_id)
+        with self._lock:
+            raw_channels = list(channel_node.channels or [])
 
         result = []
         for channel in raw_channels:
@@ -899,12 +914,10 @@ class MeshtasticManager:
             )
         return result
 
-    def channel_slots(self) -> list[dict[str, Any]]:
+    def channel_slots(self, node_id: str | None = None) -> list[dict[str, Any]]:
+        channel_node, _ = self._channel_node(node_id)
         with self._lock:
-            interface = self._interface
-            if interface is None:
-                return []
-            raw_channels = list(interface.localNode.channels or [])
+            raw_channels = list(channel_node.channels or [])
 
         disabled = [
             channel.index
@@ -940,15 +953,21 @@ class MeshtasticManager:
             )
         return result
 
-    def channel_psk(self, index: int) -> dict[str, Any]:
+    def channel_psk(
+        self,
+        index: int,
+        node_id: str | None = None,
+    ) -> dict[str, Any]:
         if not 0 <= index <= 7:
             raise ValueError("Channel index must be between 0 and 7")
-        interface = self._connected_interface()
+        channel_node, target_node_id = self._channel_node(node_id)
+        if target_node_id:
+            self._capability_preflight("remote_channels", target_node_id)
         with self._lock:
             channel = next(
                 (
                     item
-                    for item in list(interface.localNode.channels or [])
+                    for item in list(channel_node.channels or [])
                     if item.index == index
                 ),
                 None,
@@ -979,6 +998,7 @@ class MeshtasticManager:
 
     def _channel_request_digest(
         self,
+        target_node_id: str | None,
         index: int,
         role: str,
         name: str,
@@ -989,6 +1009,7 @@ class MeshtasticManager:
         position_precision: int,
     ) -> str:
         document = {
+            "target_node_id": target_node_id,
             "index": index,
             "role": role,
             "name": name.strip(),
@@ -1035,7 +1056,8 @@ class MeshtasticManager:
 
     def _prepare_channel_update(
         self,
-        interface: Any,
+        channel_node: Any,
+        target_node_id: str | None,
         index: int,
         role: str,
         name: str,
@@ -1063,7 +1085,7 @@ class MeshtasticManager:
         if not 0 <= position_precision <= 32:
             raise ValueError("Position precision must be between 0 and 32 bits")
 
-        channels = list(interface.localNode.channels or [])
+        channels = list(channel_node.channels or [])
         by_index = {channel.index: channel for channel in channels}
         channel = by_index.get(index)
         if channel is None:
@@ -1071,6 +1093,7 @@ class MeshtasticManager:
         current_role = channel.Role.Name(channel.role)
         fingerprint = self._channel_fingerprint(channels)
         request_digest = self._channel_request_digest(
+            target_node_id,
             index,
             role,
             name,
@@ -1248,6 +1271,31 @@ class MeshtasticManager:
                     }
                 )
 
+        if target_node_id and changes:
+            warnings.append(
+                {
+                    "severity": "warning",
+                    "message": (
+                        "Remote записът минава по LoRa последователно и може да "
+                        "отнеме повече време. Не прекъсвай gateway връзката."
+                    ),
+                }
+            )
+            high_risk_fields = {"name", "psk", "role"}
+            if index == 0 and any(
+                change["field"] in high_risk_fields for change in changes
+            ):
+                warnings.append(
+                    {
+                        "severity": "destructive",
+                        "message": (
+                            "Промяната на remote PRIMARY може да смени frequency "
+                            "slot-а или достъпния channel key и да прекъсне "
+                            "последващата администрация."
+                        ),
+                    }
+                )
+
         return {
             "index": index,
             "operation": "disable" if role == "DISABLED" else "update",
@@ -1263,6 +1311,7 @@ class MeshtasticManager:
             "warnings": warnings,
             "fingerprint": fingerprint,
             "request_digest": request_digest,
+            "target_node_id": target_node_id,
         }
 
     def preview_channel(
@@ -1275,11 +1324,18 @@ class MeshtasticManager:
         uplink_enabled: bool,
         downlink_enabled: bool,
         position_precision: int,
+        node_id: str | None = None,
     ) -> dict[str, Any]:
         interface = self._connected_interface()
+        channel_node, target_node_id = self._channel_node(node_id)
+        preflight = self._capability_preflight(
+            "remote_channels" if target_node_id else "channels",
+            target_node_id,
+        )
         with self._command_lock:
             plan = self._prepare_channel_update(
-                interface,
+                channel_node,
+                target_node_id,
                 index,
                 role,
                 name,
@@ -1302,6 +1358,7 @@ class MeshtasticManager:
                 self._channel_previews[token] = {
                     "expires_at": now + CHANNEL_PREVIEW_TTL_SECONDS,
                     "profile_id": self._profile_id,
+                    "target_node_id": target_node_id,
                     "index": index,
                     "request_digest": plan["request_digest"],
                     "fingerprint": plan["fingerprint"],
@@ -1310,6 +1367,9 @@ class MeshtasticManager:
             "preview_token": token,
             "expires_in_seconds": CHANNEL_PREVIEW_TTL_SECONDS,
             "channel": index,
+            "node_id": target_node_id or self._profile_id,
+            "remote": bool(target_node_id),
+            "preflight": preflight,
             "operation": plan["operation"],
             "has_changes": bool(plan["changes"]),
             "changes": plan["changes"],
@@ -1327,10 +1387,12 @@ class MeshtasticManager:
         *,
         operation: str,
         target_channel: int,
+        target_node_id: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
-            profile_id = self._profile_id
-        if not profile_id:
+            connected_profile_id = self._profile_id
+        backup_profile_id = target_node_id or connected_profile_id
+        if not backup_profile_id:
             raise RuntimeError("Cannot create a channel backup without device identity")
         backup_id = uuid.uuid4().hex
         created_at = _now()
@@ -1338,7 +1400,9 @@ class MeshtasticManager:
             "version": 1,
             "backup_id": backup_id,
             "created_at": created_at,
-            "profile_id": profile_id,
+            "profile_id": backup_profile_id,
+            "managed_via": connected_profile_id,
+            "remote": bool(target_node_id),
             "operation": operation,
             "target_channel": target_channel,
             "channels": [
@@ -1352,7 +1416,7 @@ class MeshtasticManager:
             ],
         }
         self._history_store().append_private(
-            profile_id,
+            backup_profile_id,
             CHANNEL_BACKUP_NAMESPACE,
             snapshot,
         )
@@ -1362,6 +1426,234 @@ class MeshtasticManager:
             "channel_count": len(channels),
             "encrypted": True,
         }
+
+    @staticmethod
+    def _channel_from_admin_packet(packet: dict[str, Any]) -> Any | None:
+        decoded = packet.get("decoded") or {}
+        admin = decoded.get("admin") or {}
+        raw = admin.get("raw") if isinstance(admin, dict) else None
+        if raw is not None:
+            with contextlib.suppress(Exception):
+                if raw.HasField("get_channel_response"):
+                    channel = channel_pb2.Channel()
+                    channel.CopyFrom(raw.get_channel_response)
+                    return channel
+        if isinstance(admin, dict):
+            response = admin.get("get_channel_response") or admin.get(
+                "getChannelResponse"
+            )
+            if isinstance(response, dict):
+                channel = channel_pb2.Channel()
+                ParseDict(response, channel, ignore_unknown_fields=True)
+                return channel
+        return None
+
+    def _request_remote_channel_slot(
+        self,
+        remote: Any,
+        index: int,
+    ) -> tuple[Any | None, str | int | None, dict[str, Any] | None]:
+        response: dict[str, Any] = {}
+        completed = threading.Event()
+
+        def capture_channel(packet: dict[str, Any]) -> None:
+            safe_packet = _safe(packet)
+            error = self._admin_response_error(safe_packet)
+            channel = self._channel_from_admin_packet(packet)
+            if error not in {None, "NONE", 0} or channel is not None:
+                response["packet"] = safe_packet
+                response["error"] = error
+                response["channel"] = channel
+                completed.set()
+
+        request = admin_pb2.AdminMessage(get_channel_request=index + 1)
+        remote._sendAdmin(
+            request,
+            wantResponse=True,
+            onResponse=capture_channel,
+        )
+        if not completed.wait(REMOTE_CHANNEL_RESPONSE_TIMEOUT_SECONDS):
+            raise RuntimeError(
+                f"Timed out waiting for remote channel {index}"
+            )
+        return (
+            response.get("channel"),
+            response.get("error"),
+            response.get("packet"),
+        )
+
+    def _read_remote_channels_locked(
+        self,
+        interface: Any,
+        remote: Any,
+        indexes: range | list[int] | None = None,
+    ) -> tuple[list[Any], bool, list[dict[str, Any]]]:
+        if indexes is None:
+            indexes = range(8)
+        session_refreshed = False
+        packets: list[dict[str, Any]] = []
+        channels: list[Any] = []
+        remote.ensureSessionKey()
+        for index in indexes:
+            channel, error, packet = self._request_remote_channel_slot(remote, index)
+            if error == "ADMIN_BAD_SESSION_KEY" and not session_refreshed:
+                session_refreshed = True
+                self._clear_admin_session_key(interface, remote)
+                remote.ensureSessionKey()
+                channel, error, packet = self._request_remote_channel_slot(
+                    remote,
+                    index,
+                )
+            if packet:
+                packets.append(
+                    {
+                        "channel": index,
+                        "response_received": True,
+                        "error": error,
+                    }
+                )
+            if error not in {None, "NONE", 0}:
+                raise RuntimeError(
+                    f"Remote node rejected channel {index} request: {error}"
+                )
+            if channel is None:
+                raise RuntimeError(
+                    f"Remote node did not return channel {index}"
+                )
+            if int(channel.index) != index:
+                raise RuntimeError(
+                    f"Remote node returned channel {channel.index} while {index} was requested"
+                )
+            channels.append(channel)
+        return channels, session_refreshed, packets
+
+    def request_remote_channels(self, node_id: str) -> dict[str, Any]:
+        node_id = self._validate_node_destination(node_id).lower()
+        interface = self._connected_interface()
+        if node_id == self._local_node_id(interface):
+            raise ValueError("Use the local Channel Manager for the connected radio")
+        preflight = self._capability_preflight("remote_channels", node_id)
+        with self._lock:
+            generation = self._generation
+        self._add_event(
+            "operation_request",
+            operation="remote_channels",
+            target=node_id,
+            remote=True,
+            preflight=preflight,
+        )
+
+        def worker() -> None:
+            try:
+                remote = self._managed_node(node_id)
+                with self._command_lock:
+                    channels, session_refreshed, packets = (
+                        self._read_remote_channels_locked(interface, remote)
+                    )
+                with self._lock:
+                    if generation != self._generation or interface is not self._interface:
+                        return
+                    remote.channels = channels
+                    self._remote_nodes[node_id] = remote
+                    self._remote_channels_loaded.add(node_id)
+                self._add_event(
+                    "operation_result",
+                    operation="remote_channels",
+                    target=node_id,
+                    remote=True,
+                    success=True,
+                    result={
+                        "channel_count": len(channels),
+                        "active_channels": sum(
+                            channel.role != channel_pb2.Channel.Role.DISABLED
+                            for channel in channels
+                        ),
+                        "session_refreshed": session_refreshed,
+                        "state_verified": True,
+                    },
+                    channel_responses=packets,
+                )
+            except Exception as exc:
+                error_text = str(exc) or type(exc).__name__
+                logger.info("Remote channel request for %s failed: %s", node_id, error_text)
+                with self._lock:
+                    if generation == self._generation and interface is self._interface:
+                        self._remote_channels_loaded.discard(node_id)
+                self._add_event(
+                    "operation_result",
+                    operation="remote_channels",
+                    target=node_id,
+                    remote=True,
+                    success=False,
+                    error=error_text,
+                    result={"state_verified": False},
+                )
+
+        threading.Thread(
+            target=worker,
+            name=f"meshdesk-remote-channels-{node_id}",
+            daemon=True,
+        ).start()
+        return {"status": "requested", "node_id": node_id}
+
+    def _write_remote_channel_locked(
+        self,
+        interface: Any,
+        remote: Any,
+        channel: Any,
+        *,
+        admin_index: int = 0,
+    ) -> tuple[dict[str, Any], bool]:
+        session_refreshed = False
+
+        def send_once() -> tuple[dict[str, Any], str | int | None]:
+            response: dict[str, Any] = {}
+            completed = threading.Event()
+
+            def capture_ack(packet: dict[str, Any]) -> None:
+                response["packet"] = _safe(packet)
+                response["error"] = self._admin_response_error(response["packet"])
+                completed.set()
+
+            capture_ack.__name__ = "onAckNak"
+            message = admin_pb2.AdminMessage()
+            message.set_channel.CopyFrom(channel)
+            sent = remote._sendAdmin(
+                message,
+                wantResponse=True,
+                onResponse=capture_ack,
+                adminIndex=admin_index,
+            )
+            if not completed.wait(REMOTE_CHANNEL_RESPONSE_TIMEOUT_SECONDS):
+                raise RuntimeError(
+                    f"Timed out waiting for ACK while writing remote channel {channel.index}"
+                )
+            safe_sent = _safe(sent)
+            packet_id = (
+                _pick(safe_sent, "id", "packet_id")
+                if isinstance(safe_sent, dict)
+                else None
+            )
+            return {
+                "packet_id": packet_id,
+                "channel": int(channel.index),
+                "acknowledgment": (
+                    "nak" if response.get("error") not in {None, "NONE", 0} else "ack"
+                ),
+            }, response.get("error")
+
+        remote.ensureSessionKey()
+        result, error = send_once()
+        if error == "ADMIN_BAD_SESSION_KEY":
+            session_refreshed = True
+            self._clear_admin_session_key(interface, remote)
+            remote.ensureSessionKey()
+            result, error = send_once()
+        if error not in {None, "NONE", 0}:
+            raise RuntimeError(
+                f"Remote node rejected channel {channel.index} write: {error}"
+            )
+        return result, session_refreshed
 
     def update_channel(
         self,
@@ -1374,11 +1666,18 @@ class MeshtasticManager:
         downlink_enabled: bool,
         position_precision: int,
         preview_token: str | None = None,
+        node_id: str | None = None,
     ) -> dict[str, Any]:
         interface = self._connected_interface()
+        channel_node, target_node_id = self._channel_node(node_id)
+        preflight = self._capability_preflight(
+            "remote_channels" if target_node_id else "channels",
+            target_node_id,
+        )
         with self._command_lock:
             plan = self._prepare_channel_update(
-                interface,
+                channel_node,
+                target_node_id,
                 index,
                 role,
                 name,
@@ -1399,6 +1698,7 @@ class MeshtasticManager:
                 raise ValueError("Channel preview expired; review the changes again")
             if (
                 preview["profile_id"] != profile_id
+                or preview["target_node_id"] != target_node_id
                 or preview["index"] != index
                 or preview["request_digest"] != plan["request_digest"]
             ):
@@ -1407,18 +1707,110 @@ class MeshtasticManager:
                 raise ValueError("Channel state changed after preview; reload and review again")
             if not plan["changes"]:
                 return {
-                    "channels": self.channel_slots(),
+                    "channels": self.channel_slots(target_node_id),
                     "applied": False,
                     "backup": None,
+                    "remote": bool(target_node_id),
+                    "verification": {"state": "unchanged", "verified": True},
                 }
 
             backup = self._create_channel_backup(
                 plan["channels"],
                 operation=plan["operation"],
                 target_channel=index,
+                target_node_id=target_node_id,
             )
             channel = plan["channel"]
-            if plan["operation"] == "disable":
+            write_packets: list[dict[str, Any]] = []
+            session_refreshed = False
+            verification = {"state": "local", "verified": True}
+            if target_node_id:
+                expected_channels: list[Any] = []
+                for current in plan["channels"]:
+                    copy = channel_pb2.Channel()
+                    copy.CopyFrom(current)
+                    expected_channels.append(copy)
+                if plan["operation"] == "disable":
+                    expected_channels.pop(index)
+                    disabled = channel_pb2.Channel(
+                        role=channel_pb2.Channel.Role.DISABLED
+                    )
+                    expected_channels.append(disabled)
+                    write_indexes = list(range(index, len(expected_channels)))
+                else:
+                    expected_channels[index].CopyFrom(plan["candidate"])
+                    write_indexes = [index]
+                for position, expected in enumerate(expected_channels):
+                    expected.index = position
+                admin_index = 0
+                with contextlib.suppress(Exception):
+                    admin_index = int(interface.localNode._getAdminChannelIndex())
+                try:
+                    for write_index in write_indexes:
+                        packet, refreshed = self._write_remote_channel_locked(
+                            interface,
+                            channel_node,
+                            expected_channels[write_index],
+                            admin_index=admin_index,
+                        )
+                        write_packets.append(packet)
+                        session_refreshed = session_refreshed or refreshed
+                        channel_node.channels[write_index].CopyFrom(
+                            expected_channels[write_index]
+                        )
+                except Exception as exc:
+                    self._add_event(
+                        "channel_config",
+                        operation=plan["operation"],
+                        channel=index,
+                        target=target_node_id,
+                        remote=True,
+                        success=False,
+                        error=str(exc) or type(exc).__name__,
+                        backup_id=backup["backup_id"],
+                        preview_verified=True,
+                        acknowledged_channels=[
+                            packet["channel"] for packet in write_packets
+                        ],
+                        state_verified=False,
+                        preflight=preflight,
+                    )
+                    raise
+                try:
+                    reread, refreshed, response_packets = (
+                        self._read_remote_channels_locked(
+                            interface,
+                            channel_node,
+                            write_indexes,
+                        )
+                    )
+                    session_refreshed = session_refreshed or refreshed
+                    mismatches = []
+                    for reread_channel in reread:
+                        expected = expected_channels[int(reread_channel.index)]
+                        if (
+                            reread_channel.SerializeToString(deterministic=True)
+                            != expected.SerializeToString(deterministic=True)
+                        ):
+                            mismatches.append(int(reread_channel.index))
+                        channel_node.channels[int(reread_channel.index)].CopyFrom(
+                            reread_channel
+                        )
+                    verification = {
+                        "state": "verified" if not mismatches else "mismatch",
+                        "verified": not mismatches,
+                        "checked_channels": write_indexes,
+                        "mismatches": mismatches,
+                        "channel_responses": response_packets,
+                    }
+                except Exception as exc:
+                    verification = {
+                        "state": "unavailable",
+                        "verified": False,
+                        "checked_channels": write_indexes,
+                        "reason": str(exc) or type(exc).__name__,
+                    }
+            elif plan["operation"] == "disable":
                 interface.localNode.deleteChannel(index)
             else:
                 original = channel_pb2.Channel()
@@ -1432,6 +1824,7 @@ class MeshtasticManager:
 
         self._add_event(
             "channel_config",
+            success=True,
             operation=plan["operation"],
             channel=index,
             role=role,
@@ -1439,11 +1832,22 @@ class MeshtasticManager:
             psk_changed=plan["psk_changed"],
             backup_id=backup["backup_id"],
             preview_verified=True,
+            target=target_node_id or self._profile_id,
+            remote=bool(target_node_id),
+            acknowledgment="acknowledged" if target_node_id else "local",
+            state_verified=verification["verified"],
+            verification=verification,
+            session_refreshed=session_refreshed,
+            preflight=preflight,
+            packets=write_packets,
         )
         return {
-            "channels": self.channel_slots(),
+            "channels": self.channel_slots(target_node_id),
             "applied": True,
             "backup": backup,
+            "remote": bool(target_node_id),
+            "verification": verification,
+            "session_refreshed": session_refreshed,
         }
 
     def _validated_message(
@@ -3604,6 +4008,11 @@ class MeshtasticManager:
             self._last_rx_at = _now()
             self._last_activity_at = self._last_rx_at
         decoded = packet.get("decoded") or {}
+        # Admin responses can contain PSKs, session keys and security config.
+        # Dedicated operation callbacks project safe summaries; raw admin data
+        # must never become generic UI/history events.
+        if decoded.get("portnum") == "ADMIN_APP":
+            return
         if decoded.get("portnum") == "STORE_FORWARD_APP" and self._handle_store_forward(
             packet, decoded
         ):

@@ -32,7 +32,7 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 | CH-02 | P1 | Add/edit/reorder/delete и PRIMARY validation | CH-01 | **started** |
 | CH-03 | P1 | PSK generate/import със secret-safe handling | CH-02 | **completed** |
 | CH-04 | P1 | Channel URL и QR import/export | CH-02/03 | queued |
-| CH-05 | P2 | Remote channel administration | capability + PKI ACK | queued |
+| CH-05 | P2 | Remote channel administration | capability + PKI ACK | **completed** |
 | CH-06 | P2 | Channel backup/restore diff | configuration snapshots | **started** — encrypted pre-write snapshot + diff; restore предстои |
 
 ## Messaging

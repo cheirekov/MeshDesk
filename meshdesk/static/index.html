@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>MeshDesk</title>
-    <link rel="stylesheet" href="/style.css?v=20260802-channel-preview1">
+    <link rel="stylesheet" href="/style.css?v=20260803-remote-channels1">
   </head>
   <body>
     <header>
@@ -548,16 +548,34 @@
               <strong>Channel Manager
                 <span class="help-trigger" tabindex="0" role="button"
                   aria-label="Помощ за Channel Manager"
-                  data-help="Primary е основният slot 0. Secondary каналите са допълнителни разговори. Името и PSK трябва да съвпадат при всички участници.">i</span>
+                  data-help="Primary е основният slot 0. Secondary каналите са допълнителни разговори. Device role като CLIENT или ROUTER не ограничава channel slots; тя променя routing поведението.">i</span>
               </strong>
-              <p>Управлява локално свързаното радио. PSK е скрит по подразбиране;
-                показва се само при explicit reveal. Преди write се създава
-                криптиран локален snapshot; plaintext secret не влиза в UI history.</p>
+              <p>Управлява локалното радио или изрично зареден PKI-admin възел.
+                PSK е скрит по подразбиране. Преди write се създава криптиран
+                snapshot за избрания target; plaintext secret не влиза в UI history.</p>
             </div>
-            <button id="reloadChannels" type="button" class="ghost" disabled>
-              Презареди
-            </button>
           </div>
+          <div class="channel-target-toolbar">
+            <label>
+              Управлявано устройство
+              <span class="help-trigger" tabindex="0" role="button"
+                aria-label="Помощ за remote Channel Manager"
+                data-help="Remote каналите се изчитат изрично чрез осем последователни PKI admin заявки. Това пази LoRa airtime и изисква разрешен public key.">i</span>
+              <select id="channelTarget" disabled>
+                <option value="">Локално радио</option>
+              </select>
+            </label>
+            <div class="channel-target-actions">
+              <button id="loadRemoteChannels" type="button" class="secondary hidden"
+                disabled>Зареди през LoRa</button>
+              <button id="reloadChannels" type="button" class="ghost" disabled>
+                Презареди локално
+              </button>
+            </div>
+          </div>
+          <p id="channelTargetHint" class="channel-target-hint">
+            Редактираш директно свързаното радио.
+          </p>
           <div class="channel-manager-layout">
             <nav id="channelSlotList" class="channel-slot-list empty-state">
               Свържи устройство, за да заредиш channel slots.
@@ -722,6 +740,6 @@
 
     <div id="toast" role="status" aria-live="polite"></div>
     <div id="helpTooltip" class="help-tooltip hidden" role="tooltip"></div>
-    <script src="/app.js?v=20260802-channel-preview1"></script>
+    <script src="/app.js?v=20260803-remote-channels1"></script>
   </body>
 </html>

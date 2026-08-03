@@ -57,7 +57,7 @@ result model.
 - [x] Генериране/въвеждане на PSK без показване в логовете.
 - [ ] Channel URL и QR import/export.
 - [x] Backend-validated preview и encrypted backup преди запис.
-- [ ] Remote channel administration при поддържан firmware.
+- [x] Remote channel administration с explicit load, PKI ACK и post-read verify.
 
 Критерий: каналите могат да се управляват безопасно, без CLI или Android.
 

@@ -28,7 +28,7 @@
 - [Remote NodeDB favorite/ignore](REMOTE-NODEDB.md) — разликата между managed
   и subject node, както и значението на ACK/NAK/timeout.
 - [Channel Manager](CHANNEL-MANAGER.md) — Primary/Secondary правила,
-  secret-safe PSK промени и граници на първата версия.
+  secret-safe PSK промени, remote PKI load/write и post-read verification.
 - [Contextual Help](CONTEXTUAL-HELP.md) — field-level `i` помощ, fallback
   правила и Administration safety текстове.
 

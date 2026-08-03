@@ -797,6 +797,22 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   font-size: 0.7rem;
   line-height: 1.45;
 }
+.channel-target-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+}
+.channel-target-toolbar > label { width: min(440px, 100%); }
+.channel-target-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.channel-target-hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.67rem;
+  line-height: 1.45;
+}
+.channel-target-hint.remote { color: #d8bf80; }
 .channel-manager-layout {
   display: grid;
   grid-template-columns: 270px minmax(0, 1fr);
@@ -1932,6 +1948,7 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   .channel-editor-grid { grid-template-columns: 1fr; }
   .channel-editor-grid .wide { grid-column: 1; }
   .channel-manager-intro { flex-direction: column; }
+  .channel-target-toolbar { align-items: stretch; flex-direction: column; }
   .channel-preview-change { grid-template-columns: 1fr; }
   .channel-preview-change > span { justify-content: flex-start; flex-wrap: wrap; }
   .conversation-sidebar {

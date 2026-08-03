@@ -101,6 +101,8 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert 'id="settingsChannelsTab"' in page.text
     assert page.text.index('id="configPanel"') < page.text.index('id="channelPanel"')
     assert 'id="channelSlotList"' in page.text
+    assert 'id="channelTarget"' in page.text
+    assert 'id="loadRemoteChannels"' in page.text
     assert 'id="nodePreferenceFilter"' in page.text
     assert 'id="showSelfNode"' in page.text
     assert 'id="helpTooltip"' in page.text
@@ -108,6 +110,8 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert "refreshChannelSlots" in script.text
     assert "revealCurrentChannelPsk" in script.text
     assert "secureRandomChannelPsk" in script.text
+    assert "loadRemoteChannels" in script.text
+    assert 'event.operation === "remote_channels"' in script.text
     assert "Random AES-128" in script.text
     assert "simple0–simple254" in script.text
     assert "Custom PSK и потвърждението не съвпадат" in script.text

@@ -129,7 +129,7 @@ timeout, отметни **Забрави старото сдвояване** и 
 disabled. От нея могат да се добавят, редактират и премахват Secondary канали,
 да се промени името, MQTT uplink/downlink и position precision, както и да се
 запази или замени PSK. Ключът е скрит по подразбиране, но може да бъде показан
-и копиран чрез explicit `no-store` reveal за локално свързаното радио. Не се
+и копиран чрез explicit `no-store` reveal за избрания зареден target. Не се
 записва в browser storage, plaintext audit events или chat history. Преди всеки
 реален write MeshDesk показва backend-валидирания diff и изисква отделно
 потвърждение. След него, но преди промяната, всички channel protobuf-и и PSK
@@ -219,6 +219,12 @@ packet. Публичният ключ на локалното gateway радио
 добавен в `security.admin_key` на remote устройството. След зареждане секцията
 се редактира и записва от същия Configuration формуляр. По една секция на
 заявка е умишлено — пълното изтегляне през LoRa е бавно и натоварва mesh-а.
+
+Същият target selector е наличен в **Primary и Secondary канали**. Remote
+slots се зареждат само след **Зареди през LoRa** (до осем последователни admin
+заявки). Записът има target-bound preview, encrypted snapshot за remote node-а,
+последователен ACK/NAK/timeout резултат и повторно прочитане на засегнатите
+slots. Промяна на PRIMARY име/PSK може да прекъсне последващия remote достъп.
 
 Remote admin не е отделен chat transport. Direct и channel съобщенията
 продължават да минават през локалното TCP/BLE/USB gateway радио и споделените

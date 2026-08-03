@@ -42,6 +42,7 @@ class FakeLocalNode:
         self.ack_callback_names = []
         self.session_refreshes = 0
         self.admin_metadata_responses = []
+        self.channel_write_responses = []
 
     def onAckNak(self, _packet):
         pass
@@ -107,11 +108,55 @@ class FakeLocalNode:
         self.written.append(("reset_nodedb",))
         return {"id": 93}
 
-    def _sendAdmin(self, message, *, wantResponse, onResponse):
-        self.written.append(("metadata", message.get_device_metadata_request))
-        response = self.admin_metadata_responses.pop(0)
-        onResponse(response)
-        return {"id": 94}
+    def _sendAdmin(
+        self,
+        message,
+        *,
+        wantResponse,
+        onResponse,
+        adminIndex=0,
+    ):
+        if message.get_device_metadata_request:
+            self.written.append(("metadata", True))
+            response = self.admin_metadata_responses.pop(0)
+            onResponse(response)
+            return {"id": 94}
+        if message.get_channel_request:
+            index = int(message.get_channel_request) - 1
+            response_message = admin_pb2.AdminMessage()
+            response_message.get_channel_response.CopyFrom(self.channels[index])
+            self.written.append(("read_channel", index))
+            onResponse(
+                {
+                    "decoded": {
+                        "portnum": "ADMIN_APP",
+                        "admin": {"raw": response_message},
+                    }
+                }
+            )
+            return {"id": 95 + index}
+        if message.HasField("set_channel"):
+            index = int(message.set_channel.index)
+            self.written.append(("remote_write_channel", index, adminIndex))
+            response = (
+                self.channel_write_responses.pop(0)
+                if self.channel_write_responses
+                else {
+                    "decoded": {
+                        "portnum": "ROUTING_APP",
+                        "routing": {"errorReason": "NONE"},
+                    }
+                }
+            )
+            error = (response.get("decoded") or {}).get("routing", {}).get(
+                "errorReason"
+            )
+            if error in {None, "NONE", 0}:
+                self.channels[index].CopyFrom(message.set_channel)
+            if onResponse:
+                onResponse(response)
+            return {"id": 110 + index}
+        raise AssertionError("Unexpected admin message in test fake")
 
 
 class FakeInterface:
@@ -979,6 +1024,28 @@ def test_channel_psk_is_revealed_only_by_explicit_method_without_audit_event():
     assert "psk_base64" not in manager.channel_slots()[0]
 
 
+def test_channel_admin_response_with_psk_is_not_added_to_generic_history():
+    manager, interface = connected_manager()
+    channel = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    channel.settings.psk = bytes(range(32))
+    admin = admin_pb2.AdminMessage()
+    admin.get_channel_response.CopyFrom(channel)
+    event_count = len(manager.events())
+
+    manager._on_receive(  # noqa: SLF001 - verify secret filtering at pubsub boundary
+        {
+            "fromId": "!12345678",
+            "decoded": {
+                "portnum": "ADMIN_APP",
+                "admin": {"raw": admin},
+            },
+        },
+        interface,
+    )
+
+    assert len(manager.events()) == event_count
+
+
 def test_channel_manager_adds_updates_and_disables_secondary_channel(tmp_path):
     manager, interface = connected_manager()
     manager._history = EncryptedHistory(tmp_path / "logs", key=b"c" * 32)  # noqa: SLF001
@@ -1172,6 +1239,137 @@ def test_channel_backup_is_persisted_before_failed_radio_write(tmp_path):
     assert len(backups) == 1
     assert backups[0]["operation"] == "update"
     assert primary.settings.name == "Main"
+
+
+def test_remote_channel_manager_loads_writes_and_verifies_target_snapshot(tmp_path):
+    manager, interface = connected_manager()
+    manager._history = EncryptedHistory(tmp_path / "logs", key=b"r" * 32)  # noqa: SLF001
+    remote_channels = []
+    for index in range(8):
+        role = (
+            channel_pb2.Channel.Role.PRIMARY
+            if index == 0
+            else channel_pb2.Channel.Role.DISABLED
+        )
+        channel = channel_pb2.Channel(index=index, role=role)
+        if index == 0:
+            channel.settings.name = "Remote"
+            channel.settings.psk = b"\x01"
+        remote_channels.append(channel)
+    interface.remote_node.channels = remote_channels
+
+    requested = manager.request_remote_channels("!12345678")
+    assert requested == {"status": "requested", "node_id": "!12345678"}
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        events = manager.events()
+        if any(
+            event.get("operation") == "remote_channels"
+            and event.get("kind") == "operation_result"
+            for event in events
+        ):
+            break
+        time.sleep(0.01)
+
+    result_event = next(
+        event
+        for event in manager.events()
+        if event.get("operation") == "remote_channels"
+        and event.get("kind") == "operation_result"
+    )
+    assert result_event["success"] is True
+    assert result_event["result"]["channel_count"] == 8
+    assert manager.channel_slots("!12345678")[0]["display_name"] == "Remote"
+
+    values = (1, "SECONDARY", "Ops", "random", "", False, False, 16)
+    preview = manager.preview_channel(*values, node_id="!12345678")
+    assert preview["remote"] is True
+    assert preview["node_id"] == "!12345678"
+    applied = manager.update_channel(
+        *values,
+        preview_token=preview["preview_token"],
+        node_id="!12345678",
+    )
+
+    assert applied["remote"] is True
+    assert applied["verification"]["verified"] is True
+    assert interface.remote_node.channels[1].settings.name == "Ops"
+    assert ("remote_write_channel", 1, 0) in interface.remote_node.written
+    remote_psk = base64.b64encode(
+        bytes(interface.remote_node.channels[1].settings.psk)
+    ).decode("ascii")
+    assert remote_psk not in json.dumps(manager.events())
+    backups = manager._history.load_private(  # noqa: SLF001
+        "!12345678",
+        "channel-backups",
+    )
+    assert backups[-1]["remote"] is True
+    assert backups[-1]["managed_via"] == "!87654321"
+
+
+def test_channel_preview_token_is_bound_to_managed_target(tmp_path):
+    manager, interface = connected_manager()
+    manager._history = EncryptedHistory(tmp_path / "logs", key=b"r" * 32)  # noqa: SLF001
+    local = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    local.settings.name = "Local"
+    remote = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    remote.settings.name = "Remote"
+    interface.localNode.channels = [local]
+    interface.remote_node.channels = [remote]
+    manager._remote_nodes["!12345678"] = interface.remote_node  # noqa: SLF001
+    manager._remote_channels_loaded.add("!12345678")  # noqa: SLF001
+
+    values = (0, "PRIMARY", "Changed", "unchanged", "", False, False, 0)
+    preview = manager.preview_channel(*values, node_id="!12345678")
+
+    with pytest.raises(ValueError, match="request changed after preview"):
+        manager.update_channel(
+            *values,
+            preview_token=preview["preview_token"],
+        )
+
+
+def test_remote_channel_write_refreshes_bad_admin_session_once(tmp_path):
+    manager, interface = connected_manager()
+    manager._history = EncryptedHistory(tmp_path / "logs", key=b"r" * 32)  # noqa: SLF001
+    remote = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    remote.settings.name = "Remote"
+    interface.remote_node.nodeNum = 0x12345678
+    interface.remote_node.channels = [remote]
+    interface.remote_node.channel_write_responses = [
+        {
+            "decoded": {
+                "portnum": "ROUTING_APP",
+                "routing": {"errorReason": "ADMIN_BAD_SESSION_KEY"},
+            }
+        },
+        {
+            "decoded": {
+                "portnum": "ROUTING_APP",
+                "routing": {"errorReason": "NONE"},
+            }
+        },
+    ]
+    manager._remote_nodes["!12345678"] = interface.remote_node  # noqa: SLF001
+    manager._remote_channels_loaded.add("!12345678")  # noqa: SLF001
+    values = (0, "PRIMARY", "Changed", "unchanged", "", False, False, 0)
+    preview = manager.preview_channel(*values, node_id="!12345678")
+
+    result = manager.update_channel(
+        *values,
+        preview_token=preview["preview_token"],
+        node_id="!12345678",
+    )
+
+    assert result["session_refreshed"] is True
+    assert result["verification"]["verified"] is True
+    assert interface.remote_node.session_refreshes >= 3
+    assert [
+        item for item in interface.remote_node.written if item[0] == "remote_write_channel"
+    ] == [
+        ("remote_write_channel", 0, 0),
+        ("remote_write_channel", 0, 0),
+    ]
 
 
 def test_config_schema_hides_secret_and_updates_section():
