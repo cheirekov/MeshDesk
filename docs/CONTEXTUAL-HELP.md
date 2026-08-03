@@ -21,6 +21,31 @@ Field-level registry описва познатите полета от теку�
 стойности. Това не замества capability validation, но предупреждава оператора
 да провери firmware и хардуера.
 
+Полета със специална числова семантика получават и live ред **Текущо**:
+
+- секундите се превеждат в минути/часове/дни;
+- `0 = disabled` се изписва като състояние, а не само като число;
+- комбинируемите bitmask флагове се декодират, като неизвестните bits се
+  запазват и означават, вместо да бъдат отхвърляни;
+- channel/traffic position precision се показва като privacy зона;
+- enum опциите имат четим label, но пазят точния protocol token след него.
+
+Hardware-зависими GPIO, calibration и power-monitor debug bits нямат измислен
+универсален range. Help насочва към pinout/firmware на точната платка и
+препоръчва запазване на текущата стойност.
+
+## Telemetry semantics
+
+`battery_level` от 0 до 100 е процент. Стойност над 100 е официалният
+Meshtastic marker за външно захранване и се показва като `⚡ външно`, без да се
+прави недоказан извод за зарядно, USB, solar или charging state.
+
+Metric таблиците премахват известните представяния на едно и също protobuf
+поле (`camelCase`/`snake_case`, integer и derived GPS координати) и не повтарят
+вложения `raw` object. Няма общо dedup по еднаква стойност, защото два различни
+сензора могат легитимно да отчетат едно и също число. Пълните telemetry и
+position payload-и остават достъпни в затворен по подразбиране Raw panel.
+
 ## Administration
 
 Всяка административна операция има отделен tooltip, който обяснява:
@@ -58,6 +83,10 @@ AES-256 и AES-128 са private варианти. `default` и `simple0–simple
 [Power](https://meshtastic.org/docs/configuration/radio/power/),
 [LoRa](https://meshtastic.org/docs/configuration/radio/lora/) и
 [Security](https://meshtastic.org/docs/configuration/radio/security/).
+Battery sentinel и field единиците следват official
+[Telemetry protobuf](https://github.com/meshtastic/protobufs/blob/master/meshtastic/telemetry.proto),
+а privacy зоните следват official
+[Channel position precision](https://meshtastic.org/docs/configuration/radio/channels/#position-precision).
 
 Tooltip interaction моделът следва
 [Carbon](https://carbondesignsystem.com/components/tooltip/usage/) и

@@ -134,7 +134,10 @@ disabled. От нея могат да се добавят, редактират 
 реален write MeshDesk показва backend-валидирания diff и изисква отделно
 потвърждение. След него, но преди промяната, всички channel protobuf-и и PSK
 bytes се запазват в AES-GCM криптиран snapshot под `logs/`. Slot 0 остава PRIMARY,
-а нов Secondary се добавя само в първия свободен slot. Подробности:
+а нов Secondary се добавя само в първия свободен slot. Position privacy се
+избира с човешки presets (`без позиция`, приблизителна зона или пълна GPS
+точност); Advanced режимът запазва достъп до всички protocol стойности 0–32.
+Preview diff-ът показва едновременно bits и приблизителната зона. Подробности:
 [Channel Manager](docs/CHANNEL-MANAGER.md).
 
 При прекъсване на връзката device-bound изгледите за разговори, канали,
@@ -183,7 +186,12 @@ LoRa. Липсващ optional SNR е `—`, а не измерена нула. �
 Telemetry и position резултатите се форматират в операторски метрики: battery
 percent, V/A, channel utilization и airtime в %, SNR/RSSI в dB/dBm, разстояния
 и височини в mm/m, GPS координати, DOP, timestamps, packet counters и memory в
-четими единици. Raw field path остава като ненатрапчив вторичен ред. Traceroute
+четими единици. Meshtastic sentinel стойност над 100 за battery level се
+показва като `⚡ външно захранване`, а не като невъзможен процент; тя не се
+интерпретира като доказателство за charging. CamelCase/snake_case, encoded
+`latitude_i` и derived `latitude`, както и вложеният `raw` слой се обединяват
+само по известни protobuf aliases. Пълният оригинален payload остава в
+сгъваемия Raw панел. Raw field path остава като ненатрапчив вторичен ред. Traceroute
 показва краткото име върху hop-а, node ID под него и пълното име в tooltip, за
 да остане четим и при имена с emoji.
 

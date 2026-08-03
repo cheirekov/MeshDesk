@@ -233,10 +233,21 @@ def test_nodes_are_projected_for_the_ui():
     assert node["id"] == "!12345678"
     assert node["long_name"] == "Test Node"
     assert node["battery_level"] == 88
+    assert node["power_source"] == "battery"
     assert node["hops_away"] == 0
     assert node["via_mqtt"] is False
     assert node["latitude"] == 42.1
     assert node["is_messageable"] is True
+
+
+def test_external_power_sentinel_is_not_projected_as_101_percent():
+    manager, interface = connected_manager()
+    interface.nodes["!12345678"]["deviceMetrics"]["batteryLevel"] = 101
+
+    node = manager.nodes()[0]
+
+    assert node["battery_level"] == 101
+    assert node["power_source"] == "external"
 
 
 def test_send_text_records_packet_and_event():
@@ -978,9 +989,10 @@ def test_channels_include_only_enabled_channels():
             "name": "LongFast",
             "role": "PRIMARY",
             "uplink_enabled": False,
-            "downlink_enabled": False,
-            "position_precision": 0,
-            "encrypted": True,
+                "downlink_enabled": False,
+                "position_precision": 0,
+                "position_precision_label": "0 bits · не споделя позиция",
+                "encrypted": True,
         }
     ]
 
@@ -1000,6 +1012,16 @@ def test_channel_manager_lists_all_slots_without_exposing_psk():
     assert "psk" not in slots[0]
     assert slots[1]["editable"] is True
     assert slots[2]["editable"] is False
+
+
+def test_position_precision_has_operator_facing_summaries():
+    assert MeshtasticManager._position_precision_summary(0) == (  # noqa: SLF001
+        "0 bits · не споделя позиция"
+    )
+    assert MeshtasticManager._position_precision_summary(16) == (  # noqa: SLF001
+        "16 bits · ≈ 364 m"
+    )
+    assert "GPS" in MeshtasticManager._position_precision_summary(32)  # noqa: SLF001
 
 
 def test_channel_psk_is_revealed_only_by_explicit_method_without_audit_event():
@@ -1057,6 +1079,11 @@ def test_channel_manager_adds_updates_and_disables_secondary_channel(tmp_path):
 
     values = (1, "SECONDARY", "Ops", "random", "", True, False, 12)
     preview = manager.preview_channel(*values)
+    precision_change = next(
+        item for item in preview["changes"] if item["field"] == "position_precision"
+    )
+    assert precision_change["before"] == "0 bits · не споделя позиция"
+    assert precision_change["after"] == "12 bits · ≈ 5.8 km"
     result = manager.update_channel(
         *values,
         preview_token=preview["preview_token"],
@@ -1424,6 +1451,35 @@ def test_config_metadata_exposes_firmware_limits_and_friendly_protocol_choices()
     assert protocols["label"] == "Допълнително IP излъчване"
     assert [item["value"] for item in protocols["metadata"]["choices"]] == [0, 1]
 
+    position = next(item for item in sections if item["name"] == "position")
+    flags = next(item for item in position["fields"] if item["name"] == "position_flags")
+    assert flags["metadata"]["value_format"] == "bitmask"
+    assert flags["metadata"]["maximum"] == 1023
+    assert {item["label"] for item in flags["metadata"]["flags"]} >= {
+        "Altitude",
+        "GPS timestamp",
+        "Speed",
+    }
+
+    bluetooth = next(item for item in sections if item["name"] == "bluetooth")
+    fixed_pin = next(item for item in bluetooth["fields"] if item["name"] == "fixed_pin")
+    assert fixed_pin["metadata"]["minimum"] == 100000
+    assert fixed_pin["metadata"]["maximum"] == 999999
+
+    lora = next(item for item in sections if item["name"] == "lora")
+    spread_factor = next(item for item in lora["fields"] if item["name"] == "spread_factor")
+    assert [item["value"] for item in spread_factor["metadata"]["choices"]] == [
+        0,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+    ]
+
 
 def test_config_sections_are_annotated_and_excluded_module_writes_are_blocked():
     manager, interface = connected_manager()
@@ -1451,6 +1507,13 @@ def test_neighbor_interval_below_firmware_minimum_is_rejected():
         assert "at least 14400" in str(exc)
     else:
         raise AssertionError("Expected Neighbor Info firmware range validation")
+
+
+def test_custom_lora_discrete_values_are_validated():
+    manager, _ = connected_manager()
+
+    with pytest.raises(ValueError, match="spread_factor must be one of"):
+        manager.update_config("lora", {"spread_factor": 4})
 
 
 def test_safe_config_export_and_import_omit_secrets():

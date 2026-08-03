@@ -14,6 +14,8 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
   `ROUTER_LATE`.
 - [x] Contextual help за чувствителни configuration секции.
 - [x] Field-level help за radio/module/channel настройки и Administration.
+- [x] Human-readable semantics за sentinel, duration, enum, bitmask и position
+  precision стойности, без измислени hardware ranges.
 - [ ] Централен searchable Help център в приложението.
 - [ ] Firmware/capability обозначения към всяка настройка.
 
@@ -79,6 +81,8 @@ result model.
 - [ ] Time-series база за telemetry и position.
 - [ ] Графики и CSV export.
 - [x] Friendly Neighbor Info result с resolved node names, SNR и link metadata.
+- [x] Canonical telemetry/position metric rendering с известен alias dedup,
+  external-power marker и сгъваем original payload.
 - [ ] Дългосрочно Neighbor Info ingestion/time-series.
 - [ ] Mesh topology graph с direction, SNR и last-heard.
 - [ ] Nodes-per-hop и congestion/local-stats dashboards.

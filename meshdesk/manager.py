@@ -900,6 +900,7 @@ class MeshtasticManager:
             if role == "DISABLED":
                 continue
             settings = channel.settings
+            position_precision = int(settings.module_settings.position_precision)
             result.append(
                 {
                     "index": channel.index,
@@ -908,7 +909,10 @@ class MeshtasticManager:
                     "role": role,
                     "uplink_enabled": settings.uplink_enabled,
                     "downlink_enabled": settings.downlink_enabled,
-                    "position_precision": settings.module_settings.position_precision,
+                    "position_precision": position_precision,
+                    "position_precision_label": self._position_precision_summary(
+                        position_precision
+                    ),
                     "encrypted": pskToString(settings.psk) != "unencrypted",
                 }
             )
@@ -930,6 +934,7 @@ class MeshtasticManager:
             role = channel.Role.Name(channel.role)
             settings = channel.settings
             psk_state = pskToString(settings.psk)
+            position_precision = int(settings.module_settings.position_precision)
             result.append(
                 {
                     "index": channel.index,
@@ -944,7 +949,10 @@ class MeshtasticManager:
                     "enabled": role != "DISABLED",
                     "uplink_enabled": settings.uplink_enabled,
                     "downlink_enabled": settings.downlink_enabled,
-                    "position_precision": settings.module_settings.position_precision,
+                    "position_precision": position_precision,
+                    "position_precision_label": self._position_precision_summary(
+                        position_precision
+                    ),
                     "psk_state": psk_state,
                     "encrypted": psk_state != "unencrypted",
                     "editable": role != "DISABLED" or channel.index == first_free,
@@ -1032,6 +1040,34 @@ class MeshtasticManager:
         if state == "secret":
             return f"secret AES-{len(raw_psk) * 8}"
         return state
+
+    @staticmethod
+    def _position_precision_summary(value: int) -> str:
+        bits = int(value)
+        documented = {
+            0: "не споделя позиция",
+            10: "≈ 23.3 km",
+            11: "≈ 11.7 km",
+            12: "≈ 5.8 km",
+            13: "≈ 2.9 km",
+            14: "≈ 1.5 km",
+            15: "≈ 729 m",
+            16: "≈ 364 m",
+            17: "≈ 182 m",
+            18: "≈ 91 m",
+            19: "≈ 45 m",
+            32: "пълна GPS точност",
+        }
+        if bits in documented:
+            return f"{bits} bits · {documented[bits]}"
+        if 1 <= bits <= 9:
+            meters = 23_300 * (2 ** (10 - bits))
+            return f"{bits} bits · много груба зона ≈ {meters / 1000:.0f} km"
+        if 20 <= bits <= 31:
+            meters = 45 / (2 ** (bits - 19))
+            precision = f"{meters:.1f} m" if meters >= 1 else f"{meters * 100:.0f} cm"
+            return f"{bits} bits · теоретично ≈ {precision}; реално зависи от GPS"
+        return f"{bits} bits"
 
     @staticmethod
     def _channel_change(
@@ -1210,8 +1246,10 @@ class MeshtasticManager:
                 changes,
                 "position_precision",
                 "Position precision",
-                int(channel.settings.module_settings.position_precision),
-                int(position_precision),
+                self._position_precision_summary(
+                    int(channel.settings.module_settings.position_precision)
+                ),
+                self._position_precision_summary(int(position_precision)),
             )
             if effective_psk_mode != "unchanged":
                 current_psk = bytes(channel.settings.psk)
@@ -2960,6 +2998,16 @@ class MeshtasticManager:
                     raise ValueError(f"{name} must be at least {minimum}")
                 if maximum is not None and numeric_value > maximum:
                     raise ValueError(f"{name} must be at most {maximum}")
+            if metadata.get("enforce_choices") and value is not None:
+                allowed_values = {
+                    str(choice["value"])
+                    for choice in metadata.get("choices", [])
+                    if "value" in choice
+                }
+                if str(value) not in allowed_values:
+                    raise ValueError(
+                        f"{name} must be one of {', '.join(sorted(allowed_values))}"
+                    )
             patch[name] = value
 
         candidate = type(target)()
@@ -3827,6 +3875,14 @@ class MeshtasticManager:
             position = node.get("position") or {}
             node_id = user.get("id") or f"!{node.get('num', 0):08x}"
             is_self = bool(local_node_id and node_id.lower() == local_node_id)
+            battery_level = _pick(metrics, "batteryLevel", "battery_level")
+            power_source = (
+                "external"
+                if isinstance(battery_level, (int, float)) and battery_level > 100
+                else "battery"
+                if isinstance(battery_level, (int, float)) and 0 <= battery_level <= 100
+                else None
+            )
             nodes.append(
                 {
                     "num": node.get("num"),
@@ -3851,7 +3907,8 @@ class MeshtasticManager:
                     "last_heard": _pick(node, "lastHeard", "last_heard"),
                     "snr": node.get("snr"),
                     "hops_away": _pick(node, "hopsAway", "hops_away"),
-                    "battery_level": _pick(metrics, "batteryLevel", "battery_level"),
+                    "battery_level": battery_level,
+                    "power_source": power_source,
                     "voltage": metrics.get("voltage"),
                     "latitude": _pick(
                         position,

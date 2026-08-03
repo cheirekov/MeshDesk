@@ -509,6 +509,13 @@ function configMetadataLines(field) {
   if (metadata.choices?.length) {
     lines.push(`Стойности: ${metadata.choices.map((choice) => choice.label).join("; ")}`);
   }
+  if (metadata.flags?.length) {
+    lines.push(
+      `Флагове за комбиниране: ${metadata.flags
+        .map((flag) => `${flag.value}=${flag.label}`)
+        .join("; ")}`,
+    );
+  }
   if (metadata.note) lines.push(`Важно: ${metadata.note}`);
   return lines;
 }
@@ -2108,8 +2115,7 @@ function renderNodes(nodes) {
   container.className = "nodes";
   container.innerHTML = filtered
     .map((node) => {
-      const battery =
-        node.battery_level != null ? `${node.battery_level}%` : "—";
+      const battery = batteryDisplay(node.battery_level, node.power_source);
       const snr = node.snr != null ? `${Number(node.snr).toFixed(1)} dB` : "—";
       const hops = node.via_mqtt
         ? "MQTT"
@@ -2157,7 +2163,11 @@ function renderNodes(nodes) {
             ${node.is_ignored ? '<span class="node-badge ignored">⊘ игнориран</span>' : ""}
           </div>
           <div class="node-metrics">
-            <div class="metric"><span>батерия</span><strong>${battery}</strong></div>
+            <div class="metric ${battery.className}" title="${escapeHtml(
+              battery.title,
+            )}"><span>${escapeHtml(battery.label)}</span><strong>${escapeHtml(
+              battery.value,
+            )}</strong></div>
             <div class="metric"><span>последен SNR</span><strong>${snr}</strong></div>
             <div class="metric"><span>маршрут</span><strong>${escapeHtml(hops)}</strong></div>
             <div class="metric"><span>канал</span><strong>${escapeHtml(channel)}</strong></div>
@@ -2210,6 +2220,26 @@ function renderNodes(nodes) {
 
 function valueOrDash(value, suffix = "") {
   return value == null || value === "" ? "—" : `${value}${suffix}`;
+}
+
+function batteryDisplay(level, powerSource = null) {
+  const hasLevel = level !== null && level !== undefined && level !== "";
+  const numeric = hasLevel ? Number(level) : Number.NaN;
+  if (powerSource === "external" || (Number.isFinite(numeric) && numeric > 100)) {
+    return {
+      label: "захранване",
+      value: "⚡ външно",
+      className: "external-power",
+      title:
+        "Meshtastic използва стойност над 100 като маркер за външно захранване. Това не доказва, че батерията се зарежда.",
+    };
+  }
+  return {
+    label: "батерия",
+    value: Number.isFinite(numeric) ? `${numeric}%` : "—",
+    className: "",
+    title: "Последно отчетено ниво на батерията.",
+  };
 }
 
 const metricDefinitions = {
@@ -2304,8 +2334,9 @@ function normalizedMetricKey(key) {
     .toLowerCase();
 }
 
-function friendlyMetricLabel(key) {
+function friendlyMetricLabel(key, value = null) {
   const normalized = normalizedMetricKey(key);
+  if (normalized === "battery_level" && Number(value) > 100) return "Захранване";
   if (metricDefinitions[normalized]) return metricDefinitions[normalized][0];
   if (/^ch\d+_voltage$/.test(normalized)) {
     return `Напрежение · канал ${normalized.match(/\d+/)[0]}`;
@@ -2355,6 +2386,9 @@ function formatDurationSeconds(value) {
 
 function formatMetricValue(key, value) {
   const normalized = normalizedMetricKey(key);
+  if (normalized === "battery_level" && Number(value) > 100) {
+    return "Външно захранване";
+  }
   let unit = metricDefinitions[normalized]?.[1];
   if (/^ch\d+_voltage$/.test(normalized)) unit = "V";
   if (/^ch\d+_current$/.test(normalized)) unit = "A";
@@ -2377,6 +2411,9 @@ function formatMetricValue(key, value) {
     const millimeters = Number(value);
     return `${millimeters.toLocaleString()} mm (${(millimeters / 1000).toFixed(3)} m)`;
   }
+  if (unit === "bits" && normalized === "precision_bits") {
+    return positionPrecisionDescription(value);
+  }
   if (unit === "bits") return `${value} bits`;
   if (unit === "count" || unit === "index" || unit === "text") return String(value);
   if (unit === "0–500") return `${value} / 500`;
@@ -2393,6 +2430,7 @@ function formatMetricValue(key, value) {
 function flattenMetrics(value, prefix = "") {
   const rows = [];
   Object.entries(value || {}).forEach(([key, item]) => {
+    if (normalizedMetricKey(key) === "raw") return;
     const label = prefix ? `${prefix} · ${key}` : key;
     if (item && typeof item === "object" && !Array.isArray(item)) {
       rows.push(...flattenMetrics(item, label));
@@ -2411,13 +2449,41 @@ function flattenMetrics(value, prefix = "") {
   return rows;
 }
 
+function canonicalMetricKey(key) {
+  const normalized = normalizedMetricKey(key);
+  if (normalized === "latitude_i") return "latitude";
+  if (normalized === "longitude_i") return "longitude";
+  return normalized;
+}
+
+function metricRowPriority(row) {
+  const normalized = normalizedMetricKey(row.key);
+  if (normalized === "latitude" || normalized === "longitude") return 2;
+  if (normalized === "latitude_i" || normalized === "longitude_i") return 1;
+  return 1;
+}
+
+function deduplicateMetricRows(rows) {
+  const selected = new Map();
+  rows.forEach((row) => {
+    const parts = row.path.split(" · ");
+    parts.pop();
+    const identity = `${parts.join(" · ")}|${canonicalMetricKey(row.key)}`;
+    const previous = selected.get(identity);
+    if (!previous || metricRowPriority(row) > metricRowPriority(previous)) {
+      selected.set(identity, row);
+    }
+  });
+  return [...selected.values()];
+}
+
 function metricTable(value) {
-  const rows = flattenMetrics(value);
+  const rows = deduplicateMetricRows(flattenMetrics(value));
   if (!rows.length) return '<p class="inspector-note">Няма налични стойности.</p>';
   return `<table class="metric-table">${rows
     .map(
       (row) =>
-        `<tr><td><span>${escapeHtml(friendlyMetricLabel(row.key))}</span><small>${escapeHtml(
+        `<tr><td><span>${escapeHtml(friendlyMetricLabel(row.key, row.value))}</span><small>${escapeHtml(
           row.path,
         )}</small></td><td>${escapeHtml(formatMetricValue(row.key, row.value))}</td></tr>`,
     )
@@ -2673,9 +2739,17 @@ function operationResultHtml(event) {
       <p>Обратен маршрут</p>
       ${routeHtml(event.result?.route_back)}`;
   } else if (event.operation === "telemetry") {
-    body = metricTable(event.result?.telemetry);
+    const telemetry = event.result?.telemetry || {};
+    body = `${metricTable(telemetry)}
+      <details class="raw-details"><summary>Raw telemetry payload</summary>
+        <pre>${escapeHtml(JSON.stringify(telemetry, null, 2))}</pre>
+      </details>`;
   } else if (event.operation === "position") {
-    body = metricTable(event.result?.position);
+    const position = event.result?.position || {};
+    body = `${metricTable(position)}
+      <details class="raw-details"><summary>Raw position payload</summary>
+        <pre>${escapeHtml(JSON.stringify(position, null, 2))}</pre>
+      </details>`;
   } else if (event.operation === "user_info") {
     body = metricTable(event.result?.user);
   } else if (event.operation === "neighbor_info") {
@@ -3403,6 +3477,53 @@ function secureRandomChannelPsk(size) {
   return bytesToBase64(bytes);
 }
 
+const documentedPositionPrecision = new Map([
+  [0, "Не споделя позиция"],
+  [10, "Общ район · ≈ 23.3 km"],
+  [11, "≈ 11.7 km"],
+  [12, "≈ 5.8 km"],
+  [13, "Град / широка зона · ≈ 2.9 km"],
+  [14, "≈ 1.5 km"],
+  [15, "≈ 729 m"],
+  [16, "Квартал · ≈ 364 m"],
+  [17, "≈ 182 m"],
+  [18, "≈ 91 m"],
+  [19, "Близка позиция · ≈ 45 m"],
+  [32, "Пълна GPS точност"],
+]);
+
+const positionPrecisionPresets = [0, 10, 13, 16, 19, 32];
+
+function positionPrecisionDescription(value) {
+  const bits = Number(value);
+  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return `${value} bits`;
+  if (documentedPositionPrecision.has(bits)) {
+    return `${bits} bits · ${documentedPositionPrecision.get(bits)}`;
+  }
+  if (bits < 10) {
+    const kilometers = (23.3 * 2 ** (10 - bits)).toLocaleString(undefined, {
+      maximumFractionDigits: 0,
+    });
+    return `${bits} bits · много груба зона ≈ ${kilometers} km`;
+  }
+  const meters = 45 / 2 ** (bits - 19);
+  const theoretical =
+    meters >= 1 ? `${meters.toFixed(1)} m` : `${Math.max(1, Math.round(meters * 100))} cm`;
+  return `${bits} bits · теоретично ≈ ${theoretical}; реално зависи от GPS`;
+}
+
+function updateChannelPositionPrecision() {
+  const preset = $("#channelPositionPrecisionPreset");
+  const input = $("#channelPositionPrecision");
+  const customRow = $("#channelPositionPrecisionCustomRow");
+  if (!preset || !input || !customRow) return;
+  if (preset.value !== "custom") input.value = preset.value;
+  customRow.classList.toggle("hidden", preset.value !== "custom");
+  $("#channelPositionPrecisionSummary").textContent = positionPrecisionDescription(
+    input.value,
+  );
+}
+
 function updateNewChannelPskStatus() {
   const status = $("#channelPskStatus");
   const mode = $("#channelPskMode").value;
@@ -3543,6 +3664,10 @@ function renderChannelEditor(slot) {
   }
   const isPrimary = slot.index === 0;
   const role = slot.enabled ? slot.role : "SECONDARY";
+  const positionPrecision = Number(slot.position_precision ?? 0);
+  const positionPreset = positionPrecisionPresets.includes(positionPrecision)
+    ? String(positionPrecision)
+    : "custom";
   form.className = "channel-editor";
   form.innerHTML = `
     <div class="channel-editor-head">
@@ -3595,14 +3720,37 @@ function renderChannelEditor(slot) {
           <option value="none">Без криптиране</option>
         </select>
       </label>
-      <label>
-        <span class="config-field-label">Position precision ${helpTrigger(
-          "Контролира точността на позицията, споделяна в този канал. По-ниска точност пази повече location privacy.",
-          "Помощ за channel position precision",
-        )}</span>
-        <input id="channelPositionPrecision" type="number" min="0" max="32"
-          value="${escapeHtml(slot.position_precision ?? 0)}">
-      </label>
+      <div class="channel-position-precision">
+        <label>
+          <span class="config-field-label">Position privacy ${helpTrigger(
+            "Това е таванът на точността за позицията, споделяна в този канал. 0 не споделя позиция; 32 изпраща пълната налична точност. Междинните стойности скриват местоположението в зона. Реалната GPS грешка може да е по-голяма от теоретичната зона.",
+            "Помощ за channel position precision",
+          )}</span>
+          <select id="channelPositionPrecisionPreset">
+            ${positionPrecisionPresets
+              .map(
+                (value) => `<option value="${value}" ${
+                  positionPreset === String(value) ? "selected" : ""
+                }>${escapeHtml(`${value} bits · ${documentedPositionPrecision.get(value)}`)}</option>`,
+              )
+              .join("")}
+            <option value="custom" ${positionPreset === "custom" ? "selected" : ""}>
+              Advanced · точна bit стойност
+            </option>
+          </select>
+        </label>
+        <label id="channelPositionPrecisionCustomRow" class="${
+          positionPreset === "custom" ? "" : "hidden"
+        }">
+          Точна стойност (0–32 bits)
+          <input id="channelPositionPrecision" type="number" min="0" max="32"
+            value="${escapeHtml(positionPrecision)}">
+        </label>
+        <p id="channelPositionPrecisionSummary" class="channel-precision-summary"
+          aria-live="polite">
+          ${escapeHtml(positionPrecisionDescription(positionPrecision))}
+        </p>
+      </div>
       <div class="channel-editor-flags">
         <label class="checkbox">
           <input id="channelUplink" type="checkbox" ${
@@ -3692,6 +3840,14 @@ function renderChannelEditor(slot) {
       <button type="submit" class="primary">Запиши channel ${escapeHtml(slot.index)}</button>
     </div>`;
   initHelpTips(form);
+  $("#channelPositionPrecisionPreset").addEventListener(
+    "change",
+    updateChannelPositionPrecision,
+  );
+  $("#channelPositionPrecision").addEventListener(
+    "input",
+    updateChannelPositionPrecision,
+  );
   $("#channelPskMode").addEventListener("change", () => {
     configureChannelPskEditor({ reset: true });
   });
@@ -4087,10 +4243,16 @@ function fieldControl(sectionName, field) {
     compactMetadata.push(metadata.unit);
   }
   if (metadata.default != null) compactMetadata.push(`default: ${metadata.default}`);
-  const metadataHint = compactMetadata.length
-    ? `<small class="config-field-meta"><span>${escapeHtml(
-        compactMetadata.join(" · "),
-      )}</span></small>`
+  const semanticValue = formatConfigSemanticValue(field, field.value);
+  const metadataRows = [];
+  if (compactMetadata.length) metadataRows.push(compactMetadata.join(" · "));
+  if (semanticValue) metadataRows.push(`Текущо: ${semanticValue}`);
+  const metadataHint = metadataRows.length
+    ? `<small class="config-field-meta" id="config-meta-${escapeHtml(
+        field.name,
+      )}">${metadataRows
+        .map((row) => `<span>${escapeHtml(row)}</span>`)
+        .join("")}</small>`
     : "";
   if (field.type === "bool") {
     return `<label class="config-toggle"><input type="checkbox" ${common} ${
@@ -4120,7 +4282,7 @@ function fieldControl(sectionName, field) {
         (value) =>
           `<option value="${escapeHtml(value)}" ${
             value === field.value ? "selected" : ""
-          }>${escapeHtml(value)}</option>`,
+          }>${escapeHtml(humanEnumLabel(value))} · ${escapeHtml(value)}</option>`,
       )
       .join("")}</select>${metadataHint}</label>`;
   }
@@ -4141,6 +4303,58 @@ function fieldControl(sectionName, field) {
     <input type="${inputType}" ${common} value="${escapeHtml(
       value,
     )}" ${step} ${rangeAttributes} ${placeholder}>${metadataHint}</label>`;
+}
+
+function humanEnumLabel(value) {
+  const raw = String(value || "");
+  if (/^BAUD_\d+$/.test(raw)) return `${raw.slice(5)} baud`;
+  return raw
+    .replaceAll("_", " ")
+    .toLocaleLowerCase("bg")
+    .replace(/^./, (letter) => letter.toLocaleUpperCase("bg"));
+}
+
+function formatConfigSemanticValue(field, value) {
+  const metadata = field.metadata || {};
+  if (!metadata.value_format) return "";
+  if (metadata.value_format === "position_precision") {
+    return positionPrecisionDescription(value);
+  }
+  if (metadata.value_format === "duration_zero_disabled" && Number(value) === 0) {
+    return "изключено (0)";
+  }
+  if (
+    metadata.value_format === "duration" ||
+    metadata.value_format === "duration_zero_disabled"
+  ) {
+    return formatDurationSeconds(value);
+  }
+  if (metadata.value_format === "bitmask") {
+    const numeric = Number(value);
+    if (!Number.isSafeInteger(numeric) || numeric < 0) return `невалиден bitmask: ${value}`;
+    if (!metadata.flags?.length) {
+      return numeric === 0 ? "изключено (0)" : `bitmask ${numeric} · firmware/hardware specific`;
+    }
+    const selected = metadata.flags.filter((flag) => (numeric & Number(flag.value)) !== 0);
+    const knownMask = metadata.flags.reduce((mask, flag) => mask | Number(flag.value), 0);
+    const unknown = numeric & ~knownMask;
+    const labels = selected.map((flag) => flag.label);
+    if (unknown) labels.push(`непознати bits 0x${unknown.toString(16)}`);
+    return labels.length ? `${numeric} · ${labels.join(", ")}` : "0 · firmware default / без флагове";
+  }
+  return "";
+}
+
+function updateConfigSemanticHint(field) {
+  const control = $(`#config-${field.name}`);
+  const hint = $(`#config-meta-${field.name}`);
+  if (!control || !hint || !field.metadata?.value_format) return;
+  const currentRow = [...hint.querySelectorAll("span")].find((row) =>
+    row.textContent.startsWith("Текущо:"),
+  );
+  if (currentRow) {
+    currentRow.textContent = `Текущо: ${formatConfigSemanticValue(field, control.value)}`;
+  }
 }
 
 function selectConfigSection(name) {
@@ -4185,6 +4399,12 @@ function selectConfigSection(name) {
   }
   renderConfigGuidance(section);
   initHelpTips(form);
+  section.fields.forEach((field) => {
+    if (!field.metadata?.value_format) return;
+    $(`#config-${field.name}`)?.addEventListener("input", () =>
+      updateConfigSemanticHint(field),
+    );
+  });
   if (section.name === "device") {
     $("#config-role")?.addEventListener("change", () => renderConfigGuidance(section));
   }

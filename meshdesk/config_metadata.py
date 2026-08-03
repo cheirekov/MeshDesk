@@ -40,6 +40,41 @@ _TYPE_NAMES = {
 # hardware-aware default. Keep only values that are stable and backed by the
 # current protobuf/firmware behavior.
 CONFIG_FIELD_METADATA: dict[tuple[str, str], dict[str, Any]] = {
+    ("position", "position_flags"): {
+        "label": "Данни в position пакетите",
+        "default": "0 · firmware избира основния position payload",
+        "minimum": 0,
+        "maximum": 1023,
+        "value_format": "bitmask",
+        "flags": [
+            {"value": 1, "label": "Altitude"},
+            {"value": 2, "label": "Altitude is MSL"},
+            {"value": 4, "label": "Geoidal separation"},
+            {"value": 8, "label": "DOP / PDOP"},
+            {"value": 16, "label": "Separate HDOP + VDOP"},
+            {"value": 32, "label": "Satellites in view"},
+            {"value": 64, "label": "Sequence number"},
+            {"value": 128, "label": "GPS timestamp"},
+            {"value": 256, "label": "Heading"},
+            {"value": 512, "label": "Speed"},
+        ],
+        "recommended": (
+            "Включи само нужните полета; всяко допълнение увеличава position payload-а "
+            "и LoRa airtime-а"
+        ),
+        "note": "Стойността е сбор (bitwise OR), а не избор на един режим.",
+        "enforce_range": True,
+    },
+    ("power", "powermon_enables"): {
+        "label": "Power-monitor debug източници",
+        "default": "0 · изключени power-monitor logs",
+        "value_format": "bitmask",
+        "recommended": "0, освен при целенасочена hardware диагностика",
+        "note": (
+            "Това е firmware bitmask за debug log източници. Битовете са "
+            "hardware/firmware-зависими и MeshDesk умишлено не им измисля универсални имена."
+        ),
+    },
     ("network", "enabled_protocols"): {
         "label": "Допълнително IP излъчване",
         "default": "0 · NO_BROADCAST",
@@ -87,6 +122,49 @@ CONFIG_FIELD_METADATA: dict[tuple[str, str], dict[str, Any]] = {
         "recommended": "Остави 0 или стойност в законовия и хардуерния лимит за избрания region",
         "note": "Допустимият максимум зависи от region и radio chip; няма един универсален range.",
     },
+    ("lora", "bandwidth"): {
+        "default": "0 · определя се от Modem preset",
+        "unit": "kHz",
+        "recommended": "Остави 0, когато Use preset е включено",
+        "note": "Използва се само при custom modem configuration.",
+    },
+    ("lora", "spread_factor"): {
+        "default": "0 · определя се от Modem preset",
+        "minimum": 0,
+        "maximum": 12,
+        "choices": [
+            {"value": 0, "label": "0 · от Modem preset"},
+            *[
+                {"value": value, "label": f"SF{value} · custom modem"}
+                for value in range(5, 13)
+            ],
+        ],
+        "recommended": "Остави 0, когато Use preset е включено; custom стойностите са RF advanced",
+        "note": "SF5–SF6 изискват по-нов LoRa chip; SX127x/RF95 обикновено поддържа SF7–SF12.",
+        "enforce_range": True,
+        "enforce_choices": True,
+    },
+    ("lora", "coding_rate"): {
+        "default": "0 · определя се от Modem preset",
+        "minimum": 0,
+        "maximum": 8,
+        "choices": [
+            {"value": 0, "label": "0 · от Modem preset"},
+            *[
+                {"value": value, "label": f"4/{value} · custom modem"}
+                for value in range(5, 9)
+            ],
+        ],
+        "recommended": "Остави 0, когато Use preset е включено",
+        "note": "Използва се само при custom modem configuration.",
+        "enforce_range": True,
+        "enforce_choices": True,
+    },
+    ("lora", "channel_num"): {
+        "default": "0 · automatic channel slot от channel name и region",
+        "recommended": "0 за автоматичен избор; ръчна стойност само при координиран frequency plan",
+        "note": "Допустимият брой slots зависи от избрания region.",
+    },
     ("position", "gps_update_interval"): {
         "default": "120 s за обикновен node; 86400 s за ROUTER/ROUTER_LATE",
         "unit": "s",
@@ -106,10 +184,38 @@ CONFIG_FIELD_METADATA: dict[tuple[str, str], dict[str, Any]] = {
         "unit": "m",
         "recommended": "Съобрази с точността на GPS; твърде ниско увеличава position traffic",
     },
+    ("position", "gps_attempt_time"): {
+        "default": "deprecated",
+        "unit": "s",
+        "recommended": "Не променяй; firmware използва smart/regular broadcast intervals",
+        "note": "Полето е deprecated в protobuf спецификацията.",
+    },
     ("display", "screen_on_secs"): {
         "default": "600 s за обикновен node; 1 s за ROUTER/ROUTER_LATE",
         "unit": "s",
         "recommended": "30–600 s според захранването и нуждата от локален дисплей",
+    },
+    ("display", "auto_screen_carousel_secs"): {
+        "default": "0 · carousel изключен",
+        "minimum": 0,
+        "unit": "s",
+        "value_format": "duration",
+        "recommended": "0 за ръчно превключване или удобен интервал според броя screen pages",
+    },
+    ("power", "on_battery_shutdown_after_secs"): {
+        "default": "0 · не изключвай автоматично",
+        "minimum": 0,
+        "unit": "s",
+        "value_format": "duration_zero_disabled",
+        "recommended": "0, освен ако умишлено искаш shutdown след отпадане на външното захранване",
+    },
+    ("bluetooth", "fixed_pin"): {
+        "label": "Fixed Bluetooth PIN",
+        "minimum": 100000,
+        "maximum": 999999,
+        "recommended": "Случаен 6-цифрен PIN; не използвай лесни последователности",
+        "note": "Използва се само при pairing mode FIXED_PIN.",
+        "enforce_range": True,
     },
     ("power", "wait_bluetooth_secs"): {
         "default": "60 s за обикновен node; 1 s за ROUTER/ROUTER_LATE",
@@ -150,6 +256,68 @@ CONFIG_FIELD_METADATA: dict[tuple[str, str], dict[str, Any]] = {
         "default": "-80 dBm",
         "unit": "dBm",
         "recommended": "-80 dBm като начална стойност",
+    },
+    ("paxcounter", "paxcounter_update_interval"): {
+        "unit": "s",
+        "value_format": "duration",
+        "recommended": "По-дълъг интервал намалява airtime; избери според реалната нужда от броене",
+    },
+    ("external_notification", "output_ms"): {
+        "default": "1000 ms · 1 секунда",
+        "unit": "ms",
+        "recommended": "1000 ms като начална стойност",
+    },
+    ("external_notification", "nag_timeout"): {
+        "default": "0 · без повторение",
+        "unit": "s",
+        "value_format": "duration_zero_disabled",
+        "recommended": "0, освен ако повторното известяване е необходимо",
+    },
+    ("range_test", "sender"): {
+        "default": "0 · не изпраща range-test пакети",
+        "unit": "s",
+        "value_format": "duration_zero_disabled",
+        "recommended": "0 извън контролиран range test; тестовият traffic използва airtime",
+    },
+    ("detection_sensor", "minimum_broadcast_secs"): {
+        "unit": "s",
+        "value_format": "duration",
+        "recommended": "Достатъчно дълъг интервал, за да не flood-ва mesh-а при чест trigger",
+    },
+    ("detection_sensor", "state_broadcast_secs"): {
+        "unit": "s",
+        "value_format": "duration",
+        "recommended": "Съобрази с нужната свежест и LoRa airtime budget-а",
+    },
+    ("ambient_lighting", "red"): {
+        "minimum": 0,
+        "maximum": 255,
+        "unit": "RGB",
+        "enforce_range": True,
+        "recommended": "0–255 според желания цвят и наличния LED хардуер",
+    },
+    ("ambient_lighting", "green"): {
+        "minimum": 0,
+        "maximum": 255,
+        "unit": "RGB",
+        "enforce_range": True,
+        "recommended": "0–255 според желания цвят и наличния LED хардуер",
+    },
+    ("ambient_lighting", "blue"): {
+        "minimum": 0,
+        "maximum": 255,
+        "unit": "RGB",
+        "enforce_range": True,
+        "recommended": "0–255 според желания цвят и наличния LED хардуер",
+    },
+    ("traffic_management", "position_precision_bits"): {
+        "label": "Position precision ceiling",
+        "minimum": 0,
+        "maximum": 32,
+        "value_format": "position_precision",
+        "recommended": "Предпочитай channel Position precision; това поле е version-dependent",
+        "note": "В по-новите protobuf версии precision се извежда от настройката на канала.",
+        "enforce_range": True,
     },
     ("owner", "long_name"): {
         "protocol_type": "UTF-8 text",
@@ -239,4 +407,18 @@ def config_field_metadata(
 ) -> dict[str, Any]:
     metadata = _descriptor_metadata(descriptor) if descriptor is not None else {}
     metadata.update(CONFIG_FIELD_METADATA.get((section, field), {}))
+    if field.endswith("_secs") or field.endswith("_interval"):
+        metadata.setdefault("unit", "s")
+        metadata.setdefault("value_format", "duration")
+    elif field.endswith("_ms"):
+        metadata.setdefault("unit", "ms")
+    if (
+        field.endswith("_gpio")
+        or field.endswith("_pin")
+        or field in {"rxd", "txd", "inputbroker_pin_a", "inputbroker_pin_b"}
+    ):
+        metadata["domain"] = "GPIO номер според pinout-а на конкретната платка"
+        metadata["recommended"] = (
+            "Запази board default, освен ако си проверил схемата на точния hardware variant."
+        )
     return metadata

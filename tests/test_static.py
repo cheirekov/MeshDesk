@@ -128,6 +128,14 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert 'snr == null ? "—*"' in script.text
     assert "route-node-copy" in script.text
     assert "hundredth" in script.text
+    assert "batteryDisplay" in script.text
+    assert "Външно захранване" in script.text
+    assert "deduplicateMetricRows" in script.text
+    assert "Raw position payload" in script.text
+    assert "positionPrecisionPresets" in script.text
+    assert 'id="channelPositionPrecisionPreset"' in script.text
+    assert "formatConfigSemanticValue" in script.text
+    assert "Флагове за комбиниране" in script.text
 
 
 def test_contextual_help_covers_dynamic_config_and_admin_controls() -> None:
