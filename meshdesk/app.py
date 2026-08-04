@@ -14,6 +14,7 @@ from meshdesk.connection_profiles import (
     ConnectionProfileStore,
 )
 from meshdesk.discovery import SerialDiscovery, TcpDiscovery
+from meshdesk.gateway_diagnostics import GatewayDiagnostics
 from meshdesk.manager import (
     CapabilityUnsupportedError,
     MeshtasticManager,
@@ -40,6 +41,7 @@ class ConnectionProfileRequest(BaseModel):
     address: str = ""
     device: str = ""
     auto_reconnect: bool = False
+    diagnostic_observer: bool = False
 
 
 class ConnectionIdentityRequest(BaseModel):
@@ -149,11 +151,13 @@ def create_app(
     connection_profiles: ConnectionProfileStore | None = None,
     tcp_discovery: TcpDiscovery | None = None,
     serial_discovery: SerialDiscovery | None = None,
+    gateway_diagnostics: GatewayDiagnostics | None = None,
 ) -> FastAPI:
     radio = manager or MeshtasticManager()
     profiles = connection_profiles or ConnectionProfileStore()
     discovery = tcp_discovery or TcpDiscovery()
     usb_discovery = serial_discovery or SerialDiscovery()
+    gateway_probe = gateway_diagnostics or GatewayDiagnostics()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -621,6 +625,20 @@ def create_app(
     @api.get("/api/history")
     def history() -> dict:
         return {"events": radio.history()}
+
+    @api.post("/api/diagnostics/gateways/probe")
+    def probe_saved_gateways() -> dict:
+        try:
+            return gateway_probe.probe(profiles.list(), radio)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc) or type(exc).__name__,
+            ) from exc
 
     @api.post("/api/history/replay", status_code=202)
     def replay_history(request: HistoryReplayRequest) -> dict:

@@ -319,6 +319,43 @@
           </div>
           <span class="details-hint">Покажи</span>
         </summary>
+        <section class="gateway-diagnostics">
+          <div class="gateway-diagnostics-header">
+            <div>
+              <h3>Наблюдатели на маршрута
+                <span class="help-trigger" tabindex="0" role="button"
+                  aria-label="Помощ за наблюдателите на маршрута"
+                  data-help="On-demand read-only проверка само на изрично избраните TCP наблюдатели. Сравнява identity, radio preset, channel key/name и кога наблюдателят последно е видял активното радио. Не изпраща LoRa пакет и не променя конфигурация.">i</span>
+              </h3>
+              <p id="gatewayDiagnosticsStatus">Свържи радио и стартирай ръчна проверка.</p>
+            </div>
+            <button id="probeGateways" type="button" class="ghost" disabled>Провери наблюдателите</button>
+          </div>
+          <details class="observer-picker">
+            <summary>
+              <span>Избор на TCP наблюдатели</span>
+              <small id="observerPickerSummary">Няма избрани</small>
+            </summary>
+            <p>Избери само възли, които имат смисъл за тази диагностична среда.
+              Откритите и запаметени TCP профили не се включват автоматично.</p>
+            <div id="observerProfileList" class="observer-profile-list empty-state">
+              Няма запаметени TCP профили.
+            </div>
+          </details>
+          <div id="gatewayDiagnosticsSummary" class="gateway-diagnostics-summary"></div>
+          <div id="gatewayDiagnosticsResults" class="gateway-diagnostics-results empty-state">
+            Няма извършена проверка.
+          </div>
+          <div class="diagnostic-proof">
+            <p><strong>Доказва:</strong> наблюдателят е достъпен и неговата NodeDB съдържа
+              запис за радиото към посочения момент.</p>
+            <p><strong>Не доказва:</strong> че конкретно съобщение е минало през него или
+              е достигнало MQTT. За това е нужен packet observer.</p>
+          </div>
+          <p class="gateway-diagnostics-caution">Проверката отваря кратка изолирана TCP
+            сесия и може временно да стане receive client на наблюдателя. Активното радио
+            и BLE/USB профилите не се пробват.</p>
+        </section>
         <div class="diagnostics-actions">
           <p>Сурови Meshtastic събития за проверка на връзката и доставката.</p>
           <button id="clearEvents" type="button" class="ghost">Изчисти</button>
@@ -650,6 +687,14 @@
             Автоматично повторно свързване
             <small>Само при временна transport грешка. Ръчното „Прекъсни“,
               pairing проблем или различен node ID винаги спират опитите.</small>
+          </span>
+        </label>
+        <label id="connectionProfileObserverOption" class="checkbox profile-reconnect-option">
+          <input id="connectionProfileDiagnosticObserver" type="checkbox">
+          <span>
+            Диагностичен наблюдател на маршрута
+            <small>Само за проверен TCP профил, който искаш изрично да участва в
+              read-only route диагностиката.</small>
           </span>
         </label>
         <div class="modal-actions">

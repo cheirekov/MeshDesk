@@ -27,6 +27,7 @@ def test_connection_profile_lifecycle_is_persistent(tmp_path):
     assert store.list()[0]["last_used_at"] is None
     assert store.list()[0]["device_id"] is None
     assert store.list()[0]["auto_reconnect"] is False
+    assert store.list()[0]["diagnostic_observer"] is False
 
     updated = store.update(
         created["id"],
@@ -36,10 +37,12 @@ def test_connection_profile_lifecycle_is_persistent(tmp_path):
             "host": "mesh.local",
             "port": 4403,
             "auto_reconnect": True,
+            "diagnostic_observer": True,
         },
     )
     assert updated["name"] == "Основна база"
     assert updated["auto_reconnect"] is True
+    assert updated["diagnostic_observer"] is True
     assert updated["created_at"] == created["created_at"]
 
     used = store.mark_used(created["id"])
@@ -110,6 +113,7 @@ def test_serial_connection_profile_keeps_explicit_device_path(tmp_path):
             "transport": "serial",
             "device": "/dev/serial/by-id/usb-Meshtastic_ABC-if00",
             "auto_reconnect": True,
+            "diagnostic_observer": True,
         }
     )
 
@@ -117,6 +121,7 @@ def test_serial_connection_profile_keeps_explicit_device_path(tmp_path):
     assert profile["device"] == "/dev/serial/by-id/usb-Meshtastic_ABC-if00"
     assert profile["host"] == ""
     assert profile["address"] == ""
+    assert profile["diagnostic_observer"] is False
 
 
 def test_connection_profile_file_is_versioned(tmp_path):

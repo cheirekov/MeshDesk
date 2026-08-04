@@ -11,6 +11,7 @@ Connection profiles са основата на M1 connection lifecycle. Те н�
 - време на създаване, промяна и последно използване.
 - потвърден Meshtastic node ID, име и време на последната identity проверка.
 - explicit `auto_reconnect` opt-in.
+- explicit `diagnostic_observer` opt-in само за TCP профили.
 
 Не се пазят Bluetooth PIN, channel PSK, Wi-Fi парола, private/admin keys или
 друга radio конфигурация.
@@ -36,6 +37,9 @@ lifecycle, а не към firmware конфигурацията на радио�
   умишлена смяна на устройството или identity reset.
 - Auto-reconnect не е включен по подразбиране и се редактира от modal-а на
   профила.
+- Route диагностиката също е opt-in: само identity-verified TCP профил може да
+  бъде избран като наблюдател. Изборът се управлява от секцията
+  „Наблюдатели на маршрута“ или от modal-а на профила.
 - Ръчно въведен endpoint никога не стартира безкраен background retry.
 
 ## Reconnect policy

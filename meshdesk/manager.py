@@ -32,6 +32,7 @@ from meshtastic.util import fromPSK, pskToString, to_node_num
 from pubsub import pub
 
 from meshdesk.config_metadata import config_field_metadata
+from meshdesk.gateway_diagnostics import channel_signature
 from meshdesk.history import EncryptedHistory
 from meshdesk.pairing import BluetoothPairer
 
@@ -789,6 +790,7 @@ class MeshtasticManager:
             interface = self._interface
             transport = self._transport
             target = self._target
+            target = self._target
             had_connection = (
                 interface is not None
                 or reconnect_timer is not None
@@ -960,6 +962,62 @@ class MeshtasticManager:
                 }
             )
         return result
+
+    def gateway_diagnostic_context(self, nonce: bytes) -> dict[str, Any]:
+        """Return a transient comparison context without exposing channel keys."""
+        if not isinstance(nonce, bytes) or len(nonce) < 16:
+            raise ValueError("Gateway diagnostic nonce must be at least 16 bytes")
+        interface = self._connected_interface()
+        with self._lock:
+            local_node = interface.localNode
+            raw_channels = list(local_node.channels or [])
+            transport = self._transport
+            target = self._target
+            subject_id = self._profile_id
+            subject_name = self._profile_name
+            lora = local_node.localConfig.lora
+        if not subject_id:
+            raise RuntimeError("The connected radio identity is not ready")
+
+        def enum_field_name(message: Any, field_name: str) -> str | None:
+            field = message.DESCRIPTOR.fields_by_name.get(field_name)
+            if field is None or field.enum_type is None:
+                return None
+            value = int(getattr(message, field_name))
+            descriptor = field.enum_type.values_by_number.get(value)
+            return descriptor.name if descriptor else f"UNKNOWN ({value})"
+
+        channels = []
+        for channel in raw_channels:
+            role = channel.Role.Name(channel.role)
+            settings = channel.settings
+            channels.append(
+                {
+                    "index": int(channel.index),
+                    "role": role,
+                    "enabled": role != "DISABLED",
+                    "name": settings.name,
+                    "signature": channel_signature(
+                        nonce,
+                        int(channel.index),
+                        int(channel.role),
+                        settings.name,
+                        bytes(settings.psk),
+                    ),
+                }
+            )
+        return {
+            "subject_node_id": subject_id.lower(),
+            "subject_name": subject_name,
+            "transport": transport,
+            "target": target,
+            "radio": {
+                "region": enum_field_name(lora, "region"),
+                "modem_preset": enum_field_name(lora, "modem_preset"),
+                "hop_limit": int(lora.hop_limit),
+            },
+            "channels": channels,
+        }
 
     def channel_psk(
         self,
@@ -1930,10 +1988,11 @@ class MeshtasticManager:
         status: str,
         error: str | None,
         destination: str,
+        acknowledgment: str | None = None,
     ) -> None:
         with self._lock:
             current = self._delivery_states.get(client_id)
-            if current in {"delivered", "failed", "timeout"}:
+            if current in {"relayed", "delivered", "failed", "timeout"}:
                 return
             self._delivery_states[client_id] = status
             timer = self._delivery_timers.pop(client_id, None)
@@ -1946,6 +2005,8 @@ class MeshtasticManager:
             status=status,
             error=error,
             to=destination,
+            destination_type="broadcast" if destination == "^all" else "direct",
+            acknowledgment=acknowledgment,
         )
 
     def _send_text_packet(
@@ -1966,21 +2027,34 @@ class MeshtasticManager:
             decoded = response.get("decoded") or {}
             routing = decoded.get("routing") or {}
             error = routing.get("errorReason", "NONE")
+            is_broadcast = destination == "^all"
+            success = error == "NONE"
+            status = "relayed" if success and is_broadcast else "delivered" if success else "failed"
+            acknowledgment = (
+                "implicit_rebroadcast"
+                if success and is_broadcast
+                else "destination_ack"
+                if success
+                else "routing_nak"
+            )
             if client_id:
                 self._finish_delivery(
                     client_id,
                     response_holder["packet_id"] or decoded.get("requestId"),
-                    "delivered" if error == "NONE" else "failed",
+                    status,
                     error,
                     destination,
+                    acknowledgment,
                 )
                 return
             self._add_event(
                 "delivery",
                 packet_id=response_holder["packet_id"] or decoded.get("requestId"),
-                status="delivered" if error == "NONE" else "failed",
+                status=status,
                 error=error,
                 to=destination,
+                destination_type="broadcast" if is_broadcast else "direct",
+                acknowledgment=acknowledgment,
             )
 
         with self._command_lock:
@@ -2018,6 +2092,7 @@ class MeshtasticManager:
             channel=channel,
             want_ack=want_ack,
             delivery="enroute" if want_ack else "sent",
+            destination_type="broadcast" if destination == "^all" else "direct",
             packet=safe_packet,
         )
         return safe_packet
@@ -2064,6 +2139,7 @@ class MeshtasticManager:
             channel=channel,
             want_ack=want_ack,
             delivery="queued",
+            destination_type="broadcast" if destination == "^all" else "direct",
             queue_position=queue_position,
             packet={},
         )
@@ -2117,6 +2193,7 @@ class MeshtasticManager:
                 packet_id = packet.get("id")
                 with self._lock:
                     terminal = self._delivery_states.get(client_id) in {
+                        "relayed",
                         "delivered",
                         "failed",
                         "timeout",
@@ -2132,6 +2209,9 @@ class MeshtasticManager:
                         packet_id=packet_id,
                         status="enroute" if job["want_ack"] else "sent",
                         to=job["destination"],
+                        destination_type=(
+                            "broadcast" if job["destination"] == "^all" else "direct"
+                        ),
                         packet=packet,
                     )
                 if job["want_ack"] and not terminal:

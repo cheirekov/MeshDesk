@@ -136,6 +136,22 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert 'id="channelPositionPrecisionPreset"' in script.text
     assert "formatConfigSemanticValue" in script.text
     assert "Флагове за комбиниране" in script.text
+    assert "function normalizedDeliveryStatus(message)" in script.text
+    assert "Implicit broadcast ACK" in script.text
+    assert "function renderDeliveryJourney(message, packetId)" in script.text
+    assert "Доказателства за доставката" in script.text
+    assert "Gateway / MQTT broker" in script.text
+    assert "липсващо наблюдение, а не доказана повреда" in script.text
+    assert 'id="probeGateways"' in page.text
+    assert 'id="gatewayDiagnosticsResults"' in page.text
+    assert 'id="observerProfileList"' in page.text
+    assert "Наблюдатели на маршрута" in page.text
+    assert "Не доказва:" in page.text
+    assert "function renderGatewayDiagnostics()" in script.text
+    assert "function toggleDiagnosticObserver(profileId, enabled)" in script.text
+    assert 'api("/api/diagnostics/gateways/probe"' in script.text
+    assert 'label: "✓ Доставено"' in script.text
+    assert 'label: "↗ Relay"' in script.text
 
 
 def test_contextual_help_covers_dynamic_config_and_admin_controls() -> None:

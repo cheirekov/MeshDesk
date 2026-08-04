@@ -263,6 +263,23 @@ def test_send_text_records_packet_and_event():
     kwargs["onResponse"]({"decoded": {"requestId": 42, "routing": {"errorReason": "NONE"}}})
     assert manager.events()[0]["kind"] == "outgoing"
     assert manager.events()[1]["kind"] == "delivery"
+    assert manager.events()[1]["status"] == "delivered"
+    assert manager.events()[1]["acknowledgment"] == "destination_ack"
+    assert manager.events()[1]["destination_type"] == "direct"
+
+
+def test_broadcast_ack_is_recorded_as_implicit_rebroadcast_not_delivery():
+    manager, interface = connected_manager()
+    manager.send_text("hello mesh", "^all", 1, True)
+
+    callback = interface.sent[0][1]["onResponse"]
+    callback({"decoded": {"requestId": 42, "routing": {"errorReason": "NONE"}}})
+
+    outgoing, acknowledgment = manager.events()
+    assert outgoing["destination_type"] == "broadcast"
+    assert acknowledgment["status"] == "relayed"
+    assert acknowledgment["acknowledgment"] == "implicit_rebroadcast"
+    assert acknowledgment["destination_type"] == "broadcast"
 
 
 def test_queued_message_exposes_radio_wait_then_enroute_status():
@@ -308,6 +325,21 @@ def test_queued_message_ack_is_correlated_by_client_id():
     delivery = next(event for event in manager.events() if event["kind"] == "delivery")
     assert delivery["client_id"] == queued["client_id"]
     assert delivery["status"] == "delivered"
+
+
+def test_queued_broadcast_ack_uses_relayed_terminal_state():
+    manager, interface = connected_manager()
+    queued = manager.queue_text("broadcast", "^all", 1, True)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and not interface.sent:
+        time.sleep(0.01)
+    callback = interface.sent[0][1]["onResponse"]
+    callback({"decoded": {"requestId": 42, "routing": {"errorReason": "NONE"}}})
+
+    delivery = next(event for event in manager.events() if event["kind"] == "delivery")
+    assert delivery["client_id"] == queued["client_id"]
+    assert delivery["status"] == "relayed"
+    assert delivery["acknowledgment"] == "implicit_rebroadcast"
 
 
 def test_connection_health_distinguishes_manual_disconnect_and_loss():
@@ -1012,6 +1044,23 @@ def test_channel_manager_lists_all_slots_without_exposing_psk():
     assert "psk" not in slots[0]
     assert slots[1]["editable"] is True
     assert slots[2]["editable"] is False
+
+
+def test_gateway_diagnostic_context_uses_nonce_bound_channel_signatures():
+    manager, interface = connected_manager()
+    primary = channel_pb2.Channel(index=0, role=channel_pb2.Channel.Role.PRIMARY)
+    primary.settings.name = "HQ"
+    primary.settings.psk = b"private-channel-key"
+    interface.localNode.channels = [primary]
+
+    first = manager.gateway_diagnostic_context(b"a" * 32)
+    same = manager.gateway_diagnostic_context(b"a" * 32)
+    other_probe = manager.gateway_diagnostic_context(b"b" * 32)
+
+    assert first["subject_node_id"] == "!87654321"
+    assert first["channels"][0]["signature"] == same["channels"][0]["signature"]
+    assert first["channels"][0]["signature"] != other_probe["channels"][0]["signature"]
+    assert "private-channel-key" not in str(first)
 
 
 def test_position_precision_has_operator_facing_summaries():

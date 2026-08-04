@@ -477,6 +477,47 @@ def test_send_message_endpoint():
     assert manager.calls[0] == ("send", "test", "^all", 0, True)
 
 
+def test_gateway_diagnostics_endpoint_uses_saved_profiles(tmp_path):
+    store = ConnectionProfileStore(tmp_path / "connection-profiles.json")
+    profile = store.create(
+        {
+            "name": "Gateway",
+            "transport": "tcp",
+            "host": "172.16.19.176",
+            "port": 4403,
+            "auto_reconnect": False,
+            "diagnostic_observer": True,
+        }
+    )
+
+    class StubGatewayDiagnostics:
+        def __init__(self):
+            self.profiles = []
+
+        def probe(self, profiles, _radio):
+            self.profiles = profiles
+            return {
+                "mode": "on_demand_read_only",
+                "gateways": [{"profile_id": profiles[0]["id"], "status": "reachable"}],
+            }
+
+    diagnostics = StubGatewayDiagnostics()
+    with TestClient(
+        create_app(
+            StubManager(),
+            connection_profiles=store,
+            gateway_diagnostics=diagnostics,
+        )
+    ) as client:
+        response = client.post("/api/diagnostics/gateways/probe")
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "on_demand_read_only"
+    assert response.json()["gateways"][0]["profile_id"] == profile["id"]
+    assert diagnostics.profiles[0]["host"] == "172.16.19.176"
+    assert diagnostics.profiles[0]["diagnostic_observer"] is True
+
+
 def test_node_action_endpoint():
     manager = StubManager()
     with TestClient(create_app(manager)) as client:

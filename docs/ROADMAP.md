@@ -5,6 +5,17 @@ Roadmap-ът разделя обикновения Linux клиент от бъ�
 Пълният inventory от Android сравнението е в
 [`ANDROID-PARITY-BACKLOG.md`](ANDROID-PARITY-BACKLOG.md).
 
+## Приоритетна рамка
+
+- **P0 / core reliability** — connection lifecycle, честни delivery evidence,
+  gateway диагностика и безопасност на admin/config writes.
+- **P1 / professional operations** — наблюдаемост, inventory, export и
+  подготвена основа за fleet/mass operations.
+- **P2 / workflow depth** — допълнителни анализи и специализирани operator
+  инструменти след стабилна P0/P1 основа.
+- **Nice to have** — географска карта на чутите възли и opt-in AI обяснение.
+  Те остават записани, но не изместват диагностиката и fleet safety.
+
 ## M0 — Documentation and guidance
 
 Статус: **в процес**
@@ -69,6 +80,9 @@ result model.
 - [ ] Emoji reactions.
 - [ ] Пълни routing/delivery състояния и човешки обяснения.
 - [x] Честен queued → radio/enroute → ACK/NAK/timeout lifecycle.
+- [x] Разделяне на broadcast implicit ACK от destination ACK, включително
+  backward-compatible rendering на старата история.
+- [x] Evidence-first delivery timeline в Packet Inspector.
 - [x] Видим firmware/application TX queue status без блокиране на HTTP/UI.
 - [ ] Store & Forward++ статус.
 - [ ] Full-text search, retention и export.
@@ -87,6 +101,20 @@ result model.
 - [ ] Mesh topology graph с direction, SNR и last-heard.
 - [ ] Nodes-per-hop и congestion/local-stats dashboards.
 - [ ] Базова OpenStreetMap карта и waypoints.
+
+## M4.1 — Connectivity and gateway diagnostics (приоритет пред картата)
+
+- [x] Коректна семантика за local radio, implicit relay и destination ACK.
+- [x] Компактна packet journey с confirmed/pending/failed/unknown етапи.
+- [x] On-demand route observer matrix само за explicit opt-in, identity-verified
+  TCP профили, с subprocess изолация, identity/channel/radio comparison,
+  subject last-heard и ясно „доказва/не доказва“ обозначение.
+- [ ] Passive packet-ID correlation през read-only gateway observers.
+- [ ] Read-only MQTT observer, отделен от бъдещия MQTT proxy/publisher.
+- [ ] Redacted diagnostic bundle и сравнение на Local Stats делти.
+
+Критерий: операторът може да локализира последната потвърдена граница, без
+MeshDesk да представя implicit ACK като end-to-end доставка.
 
 ## M5 — Fleet inventory foundation
 
@@ -136,6 +164,8 @@ result model.
 - MQTT client proxy.
 - Discovery preset scanner и Mesh Beacon.
 - Advanced map layers, geofence и RF site planning.
+- Географска карта на чутите възли.
+- Opt-in AI обяснение върху redacted deterministic diagnostic bundle.
 - TAK gateway.
 
 Тези функции не трябва да блокират основната надеждност и fleet safety.

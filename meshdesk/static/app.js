@@ -29,6 +29,8 @@ const state = {
   connectionProfileModalId: null,
   connectionIdentityMismatch: null,
   reconnectActive: false,
+  gatewayDiagnostics: null,
+  gatewayProbeLoading: false,
   discoveredTcpDevices: [],
   discoveredSerialDevices: [],
   roleAdvisorTrigger: null,
@@ -878,7 +880,90 @@ function renderConnectionProfiles(selectedId = "") {
     ? activeId
     : "";
   updateConnectionProfileUi();
+  renderObserverProfiles();
+  if (state.status) updateControls(state.status);
   if (state.discoveredTcpDevices.length) renderTcpDiscoveryDetails();
+}
+
+function renderObserverProfiles() {
+  const container = $("#observerProfileList");
+  const summary = $("#observerPickerSummary");
+  const profiles = state.connectionProfiles.filter(
+    (profile) => profile.transport === "tcp",
+  );
+  const selected = profiles.filter((profile) => profile.diagnostic_observer);
+  summary.textContent = selected.length
+    ? `${selected.length} избрани`
+    : "Няма избрани";
+  if (!profiles.length) {
+    container.className = "observer-profile-list empty-state";
+    container.textContent = "Няма запаметени TCP профили.";
+    return;
+  }
+  container.className = "observer-profile-list";
+  container.innerHTML = profiles
+    .map((profile) => {
+      const verified = Boolean(profile.device_id);
+      const detail = verified
+        ? `${profile.device_name || profile.device_id} · ${profile.device_id}`
+        : "Свържи профила поне веднъж, за да потвърдиш идентичността";
+      return `
+        <label class="observer-profile-option ${verified ? "" : "disabled"}">
+          <input type="checkbox" data-observer-profile-id="${escapeHtml(profile.id)}"
+            ${profile.diagnostic_observer ? "checked" : ""}
+            ${verified ? "" : "disabled"}>
+          <span><strong>${escapeHtml(profile.name)}</strong>
+            <small>${escapeHtml(`${profile.host}:${profile.port} · ${detail}`)}</small></span>
+        </label>`;
+    })
+    .join("");
+}
+
+function connectionProfilePayload(profile, overrides = {}) {
+  return {
+    name: profile.name,
+    transport: profile.transport,
+    host: profile.host,
+    port: profile.port,
+    address: profile.address,
+    device: profile.device,
+    auto_reconnect: Boolean(profile.auto_reconnect),
+    diagnostic_observer: Boolean(profile.diagnostic_observer),
+    ...overrides,
+  };
+}
+
+async function toggleDiagnosticObserver(profileId, enabled) {
+  const profile = state.connectionProfiles.find((item) => item.id === profileId);
+  if (!profile || profile.transport !== "tcp" || !profile.device_id) {
+    renderObserverProfiles();
+    return;
+  }
+  try {
+    const result = await api(
+      `/api/connection-profiles/${encodeURIComponent(profile.id)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(
+          connectionProfilePayload(profile, { diagnostic_observer: enabled }),
+        ),
+      },
+    );
+    state.connectionProfiles = state.connectionProfiles.map((item) =>
+      item.id === result.profile.id ? result.profile : item,
+    );
+    state.gatewayDiagnostics = null;
+    renderConnectionProfiles($("#connectionProfile").value);
+    renderGatewayDiagnostics();
+    toast(
+      enabled
+        ? `${profile.name} е добавен като наблюдател`
+        : `${profile.name} е премахнат от наблюдателите`,
+    );
+  } catch (error) {
+    renderObserverProfiles();
+    toast(`Наблюдателят не може да бъде обновен: ${error.message}`, true);
+  }
 }
 
 function applyConnectionProfile() {
@@ -944,6 +1029,15 @@ function openConnectionProfileModal() {
         ? $("#bleDevice").selectedOptions[0]?.text || ""
         : $("#serialDevice").selectedOptions[0]?.text || "");
   $("#connectionProfileAutoReconnect").checked = Boolean(profile?.auto_reconnect);
+  const canObserve = values.transport === "tcp" && Boolean(profile?.device_id);
+  $("#connectionProfileObserverOption").classList.toggle(
+    "hidden",
+    values.transport !== "tcp",
+  );
+  $("#connectionProfileDiagnosticObserver").checked = Boolean(
+    profile?.diagnostic_observer,
+  );
+  $("#connectionProfileDiagnosticObserver").disabled = !canObserve;
   $("#connectionProfileModal").classList.remove("hidden");
   setTimeout(() => $("#connectionProfileName").focus(), 50);
 }
@@ -973,13 +1067,16 @@ async function saveConnectionProfile() {
           name,
           ...connectionValues(),
           auto_reconnect: $("#connectionProfileAutoReconnect").checked,
+          diagnostic_observer: $("#connectionProfileDiagnosticObserver").checked,
         }),
       },
     );
     $("#connectionProfileModal").classList.add("hidden");
     state.connectionProfileModalId = null;
     state.connectionProfileDirty = false;
+    state.gatewayDiagnostics = null;
     await refreshConnectionProfiles(result.profile.id);
+    renderGatewayDiagnostics();
     applyConnectionProfile();
     toast(profileId ? "Профилът е обновен" : "Връзката е запазена като профил");
   } catch (error) {
@@ -996,7 +1093,9 @@ async function deleteConnectionProfile() {
     });
     state.connectionProfileDirty = false;
     state.connectionIdentityMismatch = null;
+    state.gatewayDiagnostics = null;
     await refreshConnectionProfiles();
+    renderGatewayDiagnostics();
     toast("Профилът е изтрит");
   } catch (error) {
     toast(error.message, true);
@@ -1108,6 +1207,11 @@ function updateControls(status) {
   $("#exportConfig").disabled = !connected;
   $("#importConfig").disabled = !connected;
   $("#syncHistory").disabled = !connected;
+  const hasObservers = state.connectionProfiles.some(
+    (profile) => profile.transport === "tcp" && profile.diagnostic_observer,
+  );
+  $("#probeGateways").disabled =
+    !connected || state.gatewayProbeLoading || !hasObservers;
   $("#adminTarget").disabled = !connected;
   document.querySelectorAll(".admin-action").forEach((button) => {
     button.disabled = !connected;
@@ -1250,6 +1354,162 @@ function updateConnectionHealth(status) {
         : healthLabels[health.state] || health.state;
 }
 
+function gatewayCompatibilityPresentation(compatibility) {
+  const presentations = {
+    compatible: ["compatible", "Radio + channel съвместими"],
+    channel_mismatch: ["warning", "Channel key/name mismatch"],
+    incompatible: ["failed", "Несъвместими radio настройки"],
+    unknown: ["warning", "Съвместимостта е неизвестна"],
+  };
+  return presentations[compatibility?.verdict] || presentations.unknown;
+}
+
+function renderGatewayDiagnostics() {
+  const result = state.gatewayDiagnostics;
+  const container = $("#gatewayDiagnosticsResults");
+  const summary = $("#gatewayDiagnosticsSummary");
+  const status = $("#gatewayDiagnosticsStatus");
+  if (!result) {
+    summary.innerHTML = "";
+    container.className = "gateway-diagnostics-results empty-state";
+    container.textContent =
+      state.connection === "connected"
+        ? "Няма извършена проверка."
+        : "Свържи радио, за да сравниш запазените TCP gateway профили.";
+    const selected = state.connectionProfiles.filter(
+      (profile) => profile.transport === "tcp" && profile.diagnostic_observer,
+    ).length;
+    status.textContent = selected
+      ? `On-demand · ${selected} избрани · без background връзки и LoRa заявки.`
+      : "Избери поне един проверен TCP наблюдател.";
+    return;
+  }
+
+  const counts = result.summary || {};
+  summary.innerHTML = `
+    <span>${escapeHtml(result.subject?.name || result.subject?.node_id || "radio")}</span>
+    <span>${escapeHtml(counts.selected_observers || 0)} избрани</span>
+    <span>${escapeHtml(counts.reachable || 0)} reachable</span>
+    <span>${escapeHtml(counts.observed_subject || 0)} виждат радиото</span>`;
+  status.textContent = `Проверено ${new Date(result.checked_at).toLocaleTimeString()} · кратки read-only TCP сесии.`;
+  const gateways = result.gateways || [];
+  if (!gateways.length) {
+    container.className = "gateway-diagnostics-results empty-state";
+    container.textContent = "Няма избрани TCP наблюдатели за проверка.";
+    return;
+  }
+  container.className = "gateway-diagnostics-results";
+  container.innerHTML = gateways
+    .map((gateway) => {
+      if (gateway.status !== "reachable") {
+        const skipped = gateway.status === "skipped";
+        return `
+          <article class="gateway-diagnostic-card ${skipped ? "warning" : "failed"}">
+            <div class="gateway-diagnostic-card-head">
+              <div><strong>${escapeHtml(gateway.profile_name)}</strong><small>${escapeHtml(
+                gateway.endpoint,
+              )}</small></div>
+              <span class="node-badge ${skipped ? "" : "failed"}">${escapeHtml(
+                skipped ? "пропуснат" : gateway.status,
+              )}</span>
+            </div>
+            <div class="gateway-diagnostic-facts"><div><span>Причина</span><b>${escapeHtml(
+              gateway.error || gateway.error_code || "неизвестна",
+            )}</b></div></div>
+          </article>`;
+      }
+      const identityMismatch = gateway.identity?.match === false;
+      const [compatibilityClass, compatibilityLabel] =
+        gatewayCompatibilityPresentation(gateway.compatibility);
+      const observation = gateway.subject_observation;
+      const matchingChannels = (gateway.compatibility?.shared_channels || [])
+        .filter((channel) => channel.key_and_name_match)
+        .map((channel) => channel.name || `slot ${channel.index}`)
+        .join(", ");
+      const route = observation
+        ? `${observation.hops_away ?? "?"} hops · ${
+            observation.via_mqtt === true
+              ? "MQTT"
+              : observation.via_mqtt === false
+                ? "LoRa/local"
+                : "transport ?"
+          }`
+        : "няма NodeDB запис";
+      const network = gateway.network || {};
+      return `
+        <article class="gateway-diagnostic-card ${
+          identityMismatch || compatibilityClass === "failed" ? "failed" : compatibilityClass
+        }">
+          <div class="gateway-diagnostic-card-head">
+            <div><strong>${escapeHtml(gateway.long_name || gateway.profile_name)}</strong><small>${escapeHtml(
+              `${gateway.node_id || "—"} · ${gateway.endpoint}`,
+            )}</small></div>
+            <span class="node-badge ${identityMismatch ? "failed" : "direct"}">${escapeHtml(
+              identityMismatch ? "identity mismatch" : "reachable",
+            )}</span>
+          </div>
+          <div class="gateway-diagnostic-badges">
+            <span class="node-badge ${compatibilityClass}">${escapeHtml(
+              compatibilityLabel,
+            )}</span>
+            <span class="node-badge ${network.mqtt_enabled ? "mqtt" : ""}">MQTT ${
+              network.mqtt_enabled ? "on" : "off"
+            }</span>
+            <span class="node-badge">UDP ${
+              network.udp_broadcast_enabled ? "on" : "off"
+            }</span>
+          </div>
+          <div class="gateway-diagnostic-facts">
+            <div><span>Последно видял ${escapeHtml(result.subject?.name || "radio")}</span><b>${escapeHtml(
+              observation?.last_heard ? relativeTime(observation.last_heard) : "никога / няма запис",
+            )}</b></div>
+            <div><span>Наблюдаван маршрут</span><b>${escapeHtml(route)}</b></div>
+            <div><span>Съвпадащи канали</span><b>${escapeHtml(
+              matchingChannels || "няма потвърден",
+            )}</b></div>
+            <div><span>Firmware / role</span><b>${escapeHtml(
+              `${gateway.firmware_version || "—"} · ${gateway.role || "—"}`,
+            )}</b></div>
+          </div>
+        </article>`;
+    })
+    .join("");
+}
+
+async function probeSavedGateways() {
+  if (state.gatewayProbeLoading || state.connection !== "connected") return;
+  const hasObservers = state.connectionProfiles.some(
+    (profile) => profile.transport === "tcp" && profile.diagnostic_observer,
+  );
+  if (!hasObservers) {
+    toast("Избери поне един проверен TCP наблюдател", true);
+    return;
+  }
+  state.gatewayProbeLoading = true;
+  const button = $("#probeGateways");
+  button.disabled = true;
+  button.textContent = "Проверка…";
+  $("#gatewayDiagnosticsStatus").textContent =
+    "Изолирани read-only handshakes към избраните TCP наблюдатели…";
+  try {
+    state.gatewayDiagnostics = await api("/api/diagnostics/gateways/probe", {
+      method: "POST",
+    });
+    renderGatewayDiagnostics();
+  } catch (error) {
+    $("#gatewayDiagnosticsStatus").textContent = error.message;
+    toast(`Gateway проверката не успя: ${error.message}`, true);
+  } finally {
+    state.gatewayProbeLoading = false;
+    button.disabled =
+      state.connection !== "connected" ||
+      !state.connectionProfiles.some(
+        (profile) => profile.transport === "tcp" && profile.diagnostic_observer,
+      );
+    button.textContent = "Провери наблюдателите";
+  }
+}
+
 async function refreshStatus() {
   try {
     const status = await api("/api/status");
@@ -1312,6 +1572,8 @@ function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastE
   state.chatMessages = {};
   state.deliveryReceipts = {};
   state.eventLog = [];
+  state.gatewayDiagnostics = null;
+  state.gatewayProbeLoading = false;
   state.unread = {};
   state.selectedConversation = null;
   state.closedConversations.clear();
@@ -1337,6 +1599,7 @@ function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastE
   renderChannelSlots([]);
   renderConfig([]);
   renderUnread();
+  renderGatewayDiagnostics();
   $("#events").className = "events empty-state";
   $("#events").textContent = reason;
 }
@@ -1348,6 +1611,8 @@ async function activateProfile(profileId, eventSequence) {
   state.chatMessages = {};
   state.deliveryReceipts = {};
   state.eventLog = [];
+  state.gatewayDiagnostics = null;
+  state.gatewayProbeLoading = false;
   state.unread = {};
   state.selectedConversation = null;
   state.closedConversations.clear();
@@ -1364,6 +1629,7 @@ async function activateProfile(profileId, eventSequence) {
   renderChannelSlots([]);
   renderConfig([]);
   renderUnread();
+  renderGatewayDiagnostics();
   if (!profileId) return;
   try {
     const { events } = await api("/api/history");
@@ -1670,18 +1936,98 @@ function renderConversations() {
   });
 }
 
+function messageDestination(message) {
+  return (
+    message.to ||
+    message.sourceEvent?.to ||
+    message.deliveryEvent?.to ||
+    ""
+  );
+}
+
+function messageIsBroadcast(message) {
+  return (
+    message.destinationType === "broadcast" ||
+    message.sourceEvent?.destination_type === "broadcast" ||
+    message.deliveryEvent?.destination_type === "broadcast" ||
+    messageDestination(message) === "^all"
+  );
+}
+
+function normalizedDeliveryStatus(message) {
+  // Older encrypted history used `delivered` for both destination ACK and the
+  // broadcast implicit ACK. Destination type lets us render it truthfully.
+  if (message.delivery === "delivered" && messageIsBroadcast(message)) return "relayed";
+  return message.delivery;
+}
+
+function deliveryPresentation(message) {
+  const status = normalizedDeliveryStatus(message);
+  const broadcast = messageIsBroadcast(message);
+  const error = message.deliveryError;
+  if (status === "queued") {
+    return {
+      className: "queued",
+      label: "⌛ Опашка",
+      detail: "Заявката чака свободен TX slot в локалното радио.",
+    };
+  }
+  if (status === "sent") {
+    return {
+      className: "sent",
+      label: "↑ Изпратено",
+      detail: "ACK не е поискан; последващата доставка не може да бъде потвърдена.",
+    };
+  }
+  if (status === "relayed") {
+    return {
+      className: "relayed",
+      label: "↗ Relay",
+      detail:
+        "Implicit broadcast ACK: чуто е поне едно препредаване. Това не доказва channel decode, gateway, MQTT или downstream доставка.",
+    };
+  }
+  if (status === "delivered") {
+    return {
+      className: "delivered",
+      label: "✓ Доставено",
+      detail: "Адресираният възел върна destination ACK за личното съобщение.",
+    };
+  }
+  if (status === "failed") {
+    return {
+      className: "failed",
+      label: "× NAK",
+      detail: `Routing заявката е отказана${error ? `: ${error}` : "."}`,
+    };
+  }
+  if (status === "timeout") {
+    return {
+      className: "failed",
+      label: "⌛ Timeout",
+      detail: broadcast
+        ? "До timeout-а локалното радио не чу implicit broadcast ACK. Това не е абсолютно доказателство, че никой не е получил пакета."
+        : "Адресираният възел не върна destination ACK преди timeout-а.",
+    };
+  }
+  if (message.wantAck) {
+    return {
+      className: "pending",
+      label: broadcast ? "… Relay" : "… ACK",
+      detail: broadcast
+        ? "Пакетът е предаден на радиото и се чака да бъде чуто препредаване."
+        : "Пакетът е предаден на радиото и се чака destination ACK.",
+    };
+  }
+  return null;
+}
+
 function deliveryLabel(message) {
-  if (message.delivery === "queued")
-    return '<span class="delivery queued">⌛ в радио опашката</span>';
-  if (message.delivery === "sent")
-    return '<span class="delivery sent">↑ предадено на радиото</span>';
-  if (message.delivery === "delivered") return '<span class="delivery delivered">✓ ACK</span>';
-  if (message.delivery === "failed") return '<span class="delivery failed">× NAK</span>';
-  if (message.delivery === "timeout")
-    return '<span class="delivery failed">⌛ без ACK / timeout</span>';
-  if (message.wantAck)
-    return '<span class="delivery pending">… предадено · чака ACK</span>';
-  return "";
+  const presentation = deliveryPresentation(message);
+  if (!presentation) return "";
+  return `<span class="delivery ${presentation.className}" title="${escapeHtml(
+    presentation.detail,
+  )}">${escapeHtml(presentation.label)}</span>`;
 }
 
 function renderChat() {
@@ -3126,6 +3472,64 @@ function packetValue(packet, camel, snake) {
   return packet?.[camel] ?? packet?.[snake];
 }
 
+function journeyStep(stateName, title, detail) {
+  const icons = { confirmed: "✓", pending: "…", failed: "×", unknown: "?" };
+  return `
+    <li class="journey-step ${escapeHtml(stateName)}">
+      <span class="journey-marker">${icons[stateName] || "?"}</span>
+      <span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small></span>
+    </li>`;
+}
+
+function renderDeliveryJourney(message, packetId) {
+  const status = normalizedDeliveryStatus(message);
+  const broadcast = messageIsBroadcast(message);
+  const hasPacketId = packetId != null;
+  const presentation = deliveryPresentation(message);
+  const localState = status === "queued" ? "pending" : hasPacketId ? "confirmed" : "failed";
+  const localDetail =
+    status === "queued"
+      ? "Изчаква свободен TX slot."
+      : hasPacketId
+        ? `Meshtastic API прие заявката и присвои packet ID ${packetId}.`
+        : "Няма packet ID, който да потвърди приемане от Meshtastic API.";
+  let meshState = "pending";
+  let meshDetail = presentation?.detail || "Чака се routing evidence.";
+  if (["relayed", "delivered"].includes(status)) meshState = "confirmed";
+  if (["failed", "timeout"].includes(status)) meshState = "failed";
+  if (status === "sent") meshState = "unknown";
+
+  return `
+    <section class="inspector-section">
+      <div class="inspector-section-title">
+        <h3>Доказателства за доставката</h3>
+        <span class="node-badge ${presentation?.className || ""}">${escapeHtml(
+          presentation?.label || "няма статус",
+        )}</span>
+      </div>
+      <ol class="delivery-journey">
+        ${journeyStep(localState, "Локално радио", localDetail)}
+        ${journeyStep(
+          meshState,
+          broadcast ? "LoRa broadcast" : "Краен получател",
+          meshDetail,
+        )}
+        ${journeyStep(
+          "unknown",
+          "Gateway / MQTT broker",
+          "Няма независим observer, който да потвърди този packet ID извън локалната radio сесия.",
+        )}
+        ${journeyStep(
+          "unknown",
+          "Downstream клиент",
+          "MeshDesk не може да заключи дали външен web client е приел или показал пакета.",
+        )}
+      </ol>
+      <p class="inspector-note">✓ е потвърдено от наличните packet данни; ? означава
+        липсващо наблюдение, а не доказана повреда.</p>
+    </section>`;
+}
+
 function renderMessageInspector(message) {
   const event = message.sourceEvent || {};
   const packet = event.packet || {};
@@ -3152,6 +3556,8 @@ function renderMessageInspector(message) {
       : hops === 0
         ? "Direct LoRa peer"
         : `LoRa · ${hops} hops`;
+  const packetId = message.packetId ?? packet.id;
+  const delivery = deliveryPresentation(message);
 
   $("#inspectorEyebrow").textContent = "PACKET INSPECTOR";
   $("#inspectorTitle").textContent =
@@ -3164,6 +3570,7 @@ function renderMessageInspector(message) {
       <div class="inspector-section-title"><h3>Съдържание</h3></div>
       <div class="message-bubble">${escapeHtml(message.text)}</div>
     </section>
+    ${message.direction === "outgoing" ? renderDeliveryJourney(message, packetId) : ""}
     <section class="inspector-section">
       <div class="inspector-section-title"><h3>Маршрут и транспорт</h3>
         <span class="node-badge ${viaMqtt ? "mqtt" : ""}">${escapeHtml(transport)}</span>
@@ -3212,7 +3619,7 @@ function renderMessageInspector(message) {
       <div class="inspector-section-title"><h3>Packet metadata</h3></div>
       <div class="inspector-grid">
         <div class="inspector-value"><span>Packet ID</span><strong>${escapeHtml(
-          valueOrDash(message.packetId ?? packet.id),
+          valueOrDash(packetId),
         )}</strong></div>
         <div class="inspector-value"><span>Channel</span><strong>${escapeHtml(
           valueOrDash(event.channel ?? packet.channel),
@@ -3235,7 +3642,16 @@ function renderMessageInspector(message) {
           }`,
         )}</strong></div>
         <div class="inspector-value"><span>ACK</span><strong>${escapeHtml(
-          message.wantAck ? message.delivery || "pending" : "not requested",
+          message.wantAck ? delivery?.label || "чака се" : "не е поискан",
+        )}</strong></div>
+        <div class="inspector-value"><span>Тип потвърждение</span><strong>${escapeHtml(
+          message.deliveryEvent?.acknowledgment === "implicit_rebroadcast" ||
+            normalizedDeliveryStatus(message) === "relayed"
+            ? "implicit rebroadcast"
+            : message.deliveryEvent?.acknowledgment === "destination_ack" ||
+                normalizedDeliveryStatus(message) === "delivered"
+              ? "destination ACK"
+              : "—",
         )}</strong></div>
       </div>
     </section>
@@ -4695,11 +5111,15 @@ function eventTitle(event) {
       : "Предадено на радиото · чака ACK";
   if (event.kind === "incoming") return `От ${event.from || "unknown"}`;
   if (event.kind === "delivery")
-    return event.status === "delivered"
-      ? "Доставено / ACK"
-      : event.status === "timeout"
-        ? "Изтече ACK timeout"
-        : "Недоставено / NAK";
+    return event.status === "relayed" ||
+      (event.status === "delivered" &&
+        (event.destination_type === "broadcast" || event.to === "^all"))
+      ? "Чуто LoRa препредаване"
+      : event.status === "delivered"
+        ? "Потвърдено от получателя"
+        : event.status === "timeout"
+          ? "Изтече ACK timeout"
+          : "Недоставено / NAK";
   if (event.kind === "operation_request") return `${operationLabel(event)} · заявка`;
   if (event.kind === "operation_result")
     return `${operationLabel(event)} · ${event.success ? "отговор" : "грешка"}`;
@@ -4749,19 +5169,22 @@ function addChatEvent(event) {
         time: event.time,
         text: event.text,
         from: event.from,
+        to: event.to,
         direction: event.kind,
         packetId,
         sourceEvent: event,
         wantAck: event.want_ack !== false,
+        destinationType:
+          event.destination_type || (event.to === "^all" ? "broadcast" : "direct"),
         delivery:
           event.delivery ||
           (event.want_ack === false
             ? "sent"
-            : earlyReceipt?.status === "delivered"
-              ? "delivered"
-              : earlyReceipt
-                ? earlyReceipt.status
-                : "enroute"),
+            : earlyReceipt
+              ? earlyReceipt.status
+              : "enroute"),
+        deliveryError: earlyReceipt?.error,
+        deliveryEvent: earlyReceipt || null,
         clientId: event.client_id,
       });
       if (earlyReceipt) delete state.deliveryReceipts[String(packetId)];
@@ -5155,6 +5578,12 @@ $("#clearEvents").addEventListener("click", () => {
   $("#events").className = "events empty-state";
   $("#events").textContent = "Списъкът е изчистен.";
 });
+$("#probeGateways").addEventListener("click", probeSavedGateways);
+$("#observerProfileList").addEventListener("change", (event) => {
+  const input = event.target.closest("[data-observer-profile-id]");
+  if (!input) return;
+  toggleDiagnosticObserver(input.dataset.observerProfileId, input.checked);
+});
 $("#closeInspector").addEventListener("click", closeInspector);
 $("#inspectorBackdrop").addEventListener("click", closeInspector);
 document.addEventListener("keydown", (event) => {
@@ -5188,6 +5617,7 @@ pollEvents();
 renderRoleAdvisor();
 renderConversations();
 renderChat();
+renderGatewayDiagnostics();
 setInterval(refreshStatus, 1500);
 setInterval(pollEvents, 1000);
 setInterval(pollPairing, 1000);

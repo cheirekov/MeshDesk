@@ -81,12 +81,17 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 | OBS-08 | P1 | Search/filter/export на packet и app logs | redaction pipeline | queued |
 | OBS-09 | P2 | Discovery scan reports/history | DISC-01 | queued |
 | OBS-10 | P1 | Android-compatible Traceroute/Neighbor cooldown с countdown | request lifecycle | **completed** |
+| OBS-11 | P0 | Broadcast implicit ACK срещу destination ACK | message lifecycle | **completed** |
+| OBS-12 | P0 | Evidence-first packet journey | OBS-11 | **completed** — gateway/MQTT е unknown без observer |
+| OBS-13 | P0 | Route observer matrix и packet-ID correlation | connection profiles | **started** — explicit opt-in observer matrix completed; passive packet correlation queued |
+| OBS-14 | P1 | Read-only MQTT observer | OBS-13 + credential/redaction policy | queued |
+| OBS-15 | P1 | Redacted diagnostic bundle | OBS-08 + OBS-13 | queued |
 
 ## Map and spatial workflows
 
 | ID | Приоритет | Функция | Зависимости | Статус |
 |---|---|---|---|---|
-| MAP-01 | P1 | Базова OpenStreetMap карта с node clustering | position model | queued |
+| MAP-01 | P3 | Базова OpenStreetMap карта с node clustering | position model | nice to have |
 | MAP-02 | P2 | Waypoint receive/send/edit/expire | waypoint packet model | queued |
 | MAP-03 | P2 | Offline tile regions | MAP-01 storage policy | queued |
 | MAP-04 | P3 | KML/KMZ/GeoJSON layers | MAP-01 | queued |

@@ -49,6 +49,7 @@ class ConnectionProfileStore:
         address = str(values.get("address") or "").strip()
         device = str(values.get("device") or "").strip()
         auto_reconnect = bool(values.get("auto_reconnect", False))
+        diagnostic_observer = bool(values.get("diagnostic_observer", False))
         try:
             port = int(values.get("port", 4403))
         except (TypeError, ValueError) as exc:
@@ -85,6 +86,7 @@ class ConnectionProfileStore:
             "address": address if transport == "ble" else "",
             "device": device if transport == "serial" else "",
             "auto_reconnect": auto_reconnect,
+            "diagnostic_observer": diagnostic_observer if transport == "tcp" else False,
         }
 
     def _load_unlocked(self) -> dict[str, dict[str, Any]]:
