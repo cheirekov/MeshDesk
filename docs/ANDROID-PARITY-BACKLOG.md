@@ -83,7 +83,7 @@ Meshtastic Android/Compose Desktop клиент. Той е inventory, а
 | OBS-10 | P1 | Android-compatible Traceroute/Neighbor cooldown с countdown | request lifecycle | **completed** |
 | OBS-11 | P0 | Broadcast implicit ACK срещу destination ACK | message lifecycle | **completed** |
 | OBS-12 | P0 | Evidence-first packet journey | OBS-11 | **completed** — gateway/MQTT е unknown без observer |
-| OBS-13 | P0 | Route observer matrix и packet-ID correlation | connection profiles | **started** — explicit opt-in observer matrix completed; passive packet correlation queued |
+| OBS-13 | P0 | Route observer matrix и packet-ID correlation | connection profiles | **completed** — explicit opt-in matrix plus bounded metadata-only TCP packet observers |
 | OBS-14 | P1 | Read-only MQTT observer | OBS-13 + credential/redaction policy | queued |
 | OBS-15 | P1 | Redacted diagnostic bundle | OBS-08 + OBS-13 | queued |
 

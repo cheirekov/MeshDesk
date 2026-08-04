@@ -48,8 +48,15 @@ Implicit ACK никога не се използва като заместите
    автоматично. Probe-ът е изолиран subprocess с timeout, не извършва writes и
    не връща PSK/signatures към браузъра. NodeDB last-heard не доказва, че
    конкретен packet е минал през наблюдателя.
-2. **Read-only profile observers** — предстои корелация на packet ID между основното
-   радио и изрично избрани gateway профили, без configuration writes.
+2. **Read-only profile observers** — реализирана bounded корелация на packet ID
+   между основното радио и изрично избрани TCP наблюдатели. Началният TCP packet
+  burst се оттича преди статус `ready`; след това се събират само metadata за
+  пакети от активния subject, без text payload и configuration writes.
+  Profile selection и активна observer сесия са отделни състояния. Composer
+  показва ненатрапчив countdown, а Inspector различава `not configured`,
+  `not armed`, `syncing/not ready`, `expired`, `armed but not seen` и
+  `observed`. Първото sighting за observer+packet се пази като redacted,
+  криптирано history evidence и остава достъпно след края на сесията.
 3. **Read-only MQTT observer** — subscription и packet correlation без publish.
 4. **Redacted diagnostic bundle** — export на фактите и времевата линия без
    PSK, private keys, credentials, текстове и точна позиция по подразбиране.
@@ -59,6 +66,8 @@ AI обяснение и географска карта са `nice to have`. Т
 факти.
 
 Meshtastic API не multiplex-ва надеждно няколко receive клиента. Затова
-матрицата не държи постоянни вторични връзки: всеки profile probe е кратък и
-изрично стартиран от оператора. Бъдещият packet observer ще има отделен
-lifecycle и ясно предупреждение преди включване.
+матрицата не държи постоянни вторични връзки, а packet observer-ът има изричен
+30–300 секунден lifecycle, identity guard и Stop действие. Observer evidence
+доказва, че конкретният TCP възел е видял packet ID. Само `via_mqtt=true`
+доказва MQTT входящ път към този наблюдател; LoRa/local sighting не доказва
+broker publish.

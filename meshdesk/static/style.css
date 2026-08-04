@@ -713,6 +713,7 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 .delivery.sent,
 .delivery.pending { color: #9cccf2; }
 .delivery.recovered { color: #9cccf2; }
+.delivery.observed { color: #78d6c4; }
 .reply-message {
   padding: 0;
   background: transparent;
@@ -736,6 +737,22 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
 .composer-channel { width: min(250px, 40%); }
 .composer-channel select { pointer-events: auto; }
 .composer-ack { padding-bottom: 10px; }
+.observer-chat-status {
+  align-self: center;
+  padding: 5px 7px;
+  border: 1px solid #625329;
+  border-radius: 999px;
+  background: rgba(73, 55, 19, 0.28);
+  color: #d5b86f;
+  font: 700 0.58rem ui-monospace, monospace;
+  white-space: nowrap;
+}
+.observer-chat-status.active {
+  border-color: #3f725d;
+  background: rgba(24, 72, 53, 0.3);
+  color: #83ddbb;
+}
+.observer-chat-status.hidden { display: none; }
 .composer-toolbar #byteCount { margin-left: auto; padding-bottom: 11px; }
 .sr-only {
   position: absolute;
@@ -1809,6 +1826,76 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   font: 0.6rem/1.4 ui-monospace, monospace;
 }
 .observer-profile-option.disabled { cursor: not-allowed; opacity: 0.58; }
+.packet-observer-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 105px auto auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 10px;
+  padding: 11px;
+  border: 1px solid #315247;
+  border-radius: 9px;
+  background: rgba(13, 35, 28, 0.72);
+}
+.packet-observer-control strong { color: var(--text); font-size: 0.72rem; }
+.packet-observer-control p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.63rem;
+  line-height: 1.4;
+}
+.packet-observer-control label { font-size: 0.62rem; }
+.packet-observer-results {
+  margin-top: 8px;
+  padding: 9px;
+  border: 1px solid #263f36;
+  border-radius: 9px;
+  background: #091711;
+}
+.packet-observer-results.empty-state { padding: 12px; }
+.packet-observer-list { display: grid; gap: 5px; }
+.packet-observer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border-bottom: 1px solid #20362e;
+  color: var(--muted);
+  font-size: 0.61rem;
+}
+.packet-observer-row:last-child { border-bottom: 0; }
+.packet-observer-row strong,
+.packet-observer-row small { display: block; }
+.packet-observer-row strong { color: var(--text); font-size: 0.67rem; }
+.packet-observer-row small { margin-top: 2px; }
+.packet-observer-error {
+  grid-column: 1 / -1;
+  color: #e99595;
+  overflow-wrap: anywhere;
+}
+.packet-observer-empty {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.63rem;
+}
+.packet-sightings { margin-top: 8px; border-top: 1px solid #294139; }
+.packet-sightings summary {
+  padding: 8px 2px 4px;
+  color: #9db2aa;
+  font-size: 0.64rem;
+  cursor: pointer;
+}
+.packet-sighting-row {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 2px;
+  color: var(--muted);
+  font-size: 0.61rem;
+}
+.packet-sighting-row code { color: #b9d8ce; }
 .gateway-diagnostics-summary {
   display: flex;
   flex-wrap: wrap;
@@ -2153,6 +2240,8 @@ textarea { resize: vertical; min-height: 98px; line-height: 1.5; }
   .nodes { grid-template-columns: 1fr; }
   .gateway-diagnostics-results { grid-template-columns: 1fr; }
   .diagnostic-proof { grid-template-columns: 1fr; }
+  .packet-observer-control { grid-template-columns: 1fr 1fr; }
+  .packet-observer-control > div { grid-column: 1 / -1; }
   .remote-config-controls { grid-template-columns: 1fr 1fr; }
   .remote-config-controls > button { align-self: end; }
   .admin-toolbar { align-items: stretch; flex-direction: column; }

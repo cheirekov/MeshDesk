@@ -27,6 +27,8 @@
   роли и как ще бъдат превърнати в безопасни профили.
 - [Mass operations](MASS-OPERATIONS.md) — архитектура и защитни механизми за
   групови NodeDB и configuration операции.
+- [Fleet identity and access paths](FLEET-MODEL.md) — managed device identity,
+  direct profiles, remote LoRa admin paths и diagnostic observers.
 - [Remote NodeDB favorite/ignore](REMOTE-NODEDB.md) — разликата между managed
   и subject node, както и значението на ACK/NAK/timeout.
 - [Channel Manager](CHANNEL-MANAGER.md) — Primary/Secondary правила,

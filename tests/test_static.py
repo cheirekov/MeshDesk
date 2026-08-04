@@ -140,7 +140,8 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert "Implicit broadcast ACK" in script.text
     assert "function renderDeliveryJourney(message, packetId)" in script.text
     assert "Доказателства за доставката" in script.text
-    assert "Gateway / MQTT broker" in script.text
+    assert '"TCP наблюдател"' in script.text
+    assert '"MQTT път"' in script.text
     assert "липсващо наблюдение, а не доказана повреда" in script.text
     assert 'id="probeGateways"' in page.text
     assert 'id="gatewayDiagnosticsResults"' in page.text
@@ -149,6 +150,13 @@ def test_chat_network_and_channel_manager_have_stable_controls() -> None:
     assert "Не доказва:" in page.text
     assert "function renderGatewayDiagnostics()" in script.text
     assert "function toggleDiagnosticObserver(profileId, enabled)" in script.text
+    assert 'id="startPacketObservers"' in page.text
+    assert 'id="packetObserverResults"' in page.text
+    assert "function packetObservationEvidence(packetId," in script.text
+    assert "function packetObservationCoverage(messageTime)" in script.text
+    assert 'api("/api/diagnostics/observers/start"' in script.text
+    assert 'id="chatObserverStatus"' in page.text
+    assert 'event.kind === "observer_sighting"' in script.text
     assert 'api("/api/diagnostics/gateways/probe"' in script.text
     assert 'label: "✓ Доставено"' in script.text
     assert 'label: "↗ Relay"' in script.text

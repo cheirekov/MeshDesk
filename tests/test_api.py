@@ -518,6 +518,64 @@ def test_gateway_diagnostics_endpoint_uses_saved_profiles(tmp_path):
     assert diagnostics.profiles[0]["diagnostic_observer"] is True
 
 
+def test_packet_observer_lifecycle_endpoints_use_saved_profiles(tmp_path):
+    store = ConnectionProfileStore(tmp_path / "connection-profiles.json")
+    profile = store.create(
+        {
+            "name": "Observer",
+            "transport": "tcp",
+            "host": "172.16.16.115",
+            "port": 4403,
+            "diagnostic_observer": True,
+        }
+    )
+
+    class StubPacketObservers:
+        def __init__(self):
+            self.calls = []
+            self.current = {"state": "idle", "observers": [], "sightings": []}
+
+        def start(self, profiles, _radio, duration):
+            self.calls.append(("start", profiles, duration))
+            self.current = {
+                "state": "active",
+                "observers": [{"profile_id": profiles[0]["id"], "status": "ready"}],
+                "sightings": [],
+            }
+            return self.current
+
+        def status(self):
+            return self.current
+
+        def stop(self, reason="operator"):
+            self.calls.append(("stop", reason))
+            self.current = {"state": "stopped", "observers": [], "sightings": []}
+            return self.current
+
+    observers = StubPacketObservers()
+    with TestClient(
+        create_app(
+            StubManager(),
+            connection_profiles=store,
+            packet_observers=observers,
+        )
+    ) as client:
+        started = client.post(
+            "/api/diagnostics/observers/start",
+            json={"duration_seconds": 60},
+        )
+        status = client.get("/api/diagnostics/observers/status")
+        stopped = client.post("/api/diagnostics/observers/stop")
+
+    assert started.status_code == 200
+    assert started.json()["state"] == "active"
+    assert status.json()["state"] == "active"
+    assert stopped.json()["state"] == "stopped"
+    assert observers.calls[0][0] == "start"
+    assert observers.calls[0][1][0]["id"] == profile["id"]
+    assert observers.calls[0][2] == 60
+
+
 def test_node_action_endpoint():
     manager = StubManager()
     with TestClient(create_app(manager)) as client:

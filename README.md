@@ -230,6 +230,16 @@ packet. PSK bytes и временните comparison signatures не се връ
 Проверката не изпраща LoRa packet и не записва конфигурация; тя може временно
 да стане receive client на TCP наблюдателя.
 
+От същата секция може да се стартира bounded **Packet observer** за 1, 2 или 5
+минути. След identity handshake MeshDesk изчаква началният TCP backlog да се
+оттече и показва `ready`; едва тогава packet ID наблюденията се използват като
+delivery evidence. Събират се само metadata за пакети от активното радио — без
+текстов payload. Точният observer и `via_mqtt` evidence се виждат ненатрапчиво
+в чата и в Packet Inspector. Избирането на профил не стартира постоянна
+връзка: активният bounded прозорец се вижда до composer-а като `◎ N/N · seconds`.
+Inspector различава липсваща, синхронизираща, изтекла и активна-but-not-seen
+сесия. Потвърдените sightings се пазят в криптираната device history.
+
 Конфигурационният модул е сгънат по подразбиране. Най-отгоре има отделна секция
 **Потребител / име** за дълго име, кратко име, радиолюбителски лиценз и
 `unmessagable` флага; след нея са radio и module protobuf секциите. Формулярът

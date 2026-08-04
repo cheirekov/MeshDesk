@@ -109,7 +109,8 @@ result model.
 - [x] On-demand route observer matrix само за explicit opt-in, identity-verified
   TCP профили, с subprocess изолация, identity/channel/radio comparison,
   subject last-heard и ясно „доказва/не доказва“ обозначение.
-- [ ] Passive packet-ID correlation през read-only gateway observers.
+- [x] Bounded packet-ID correlation през explicit read-only TCP observers, с
+  initial-backlog quiet window и metadata-only capture за активния subject.
 - [ ] Read-only MQTT observer, отделен от бъдещия MQTT proxy/publisher.
 - [ ] Redacted diagnostic bundle и сравнение на Local Stats делти.
 
@@ -118,6 +119,8 @@ MeshDesk да представя implicit ACK като end-to-end доставк
 
 ## M5 — Fleet inventory foundation
 
+- [x] Архитектурно разделяне на managed device, direct connection profile,
+  remote LoRa admin access path и diagnostic observer.
 - [ ] Стабилна device identity, независимо от transport.
 - [ ] Persistent capability/firmware inventory за повече управлявани устройства.
 - [ ] Tags и saved selections за управлявани устройства.

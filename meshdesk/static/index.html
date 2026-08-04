@@ -241,6 +241,9 @@
                     aria-label="Помощ за ACK"
                     data-help="Иска routing acknowledgment. ACK потвърждава доставка до целта, а NAK показва routing грешка.">i</span>
                 </label>
+                <button id="chatObserverStatus" type="button"
+                  class="observer-chat-status hidden"
+                  title="Отвори Packet observer диагностиката">◎ Observer off</button>
                 <span id="byteCount">0 / 230 bytes</span>
                 <button id="sendButton" type="submit" class="primary" disabled>Изпрати</button>
               </div>
@@ -342,6 +345,30 @@
               Няма запаметени TCP профили.
             </div>
           </details>
+          <section class="packet-observer-control">
+            <div>
+              <strong>Packet observer</strong>
+              <p id="packetObserverStatus">Не е стартирана bounded наблюдателна сесия.</p>
+            </div>
+            <label>
+              Прозорец
+              <select id="packetObserverDuration">
+                <option value="60">1 минута</option>
+                <option value="120" selected>2 минути</option>
+                <option value="300">5 минути</option>
+              </select>
+            </label>
+            <button id="startPacketObservers" type="button" class="secondary" disabled>
+              Стартирай
+            </button>
+            <button id="stopPacketObservers" type="button" class="ghost" disabled>
+              Спри
+            </button>
+          </section>
+          <div id="packetObserverResults" class="packet-observer-results empty-state">
+            След старт изчакай наблюдателите да покажат „готов“, преди да изпратиш
+            тестовото съобщение.
+          </div>
           <div id="gatewayDiagnosticsSummary" class="gateway-diagnostics-summary"></div>
           <div id="gatewayDiagnosticsResults" class="gateway-diagnostics-results empty-state">
             Няма извършена проверка.

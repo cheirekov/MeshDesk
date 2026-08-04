@@ -89,6 +89,7 @@ HISTORY_EVENT_KINDS = {
     "operation_request",
     "operation_result",
     "store_forward",
+    "observer_sighting",
 }
 TRANSPORT_ACTIVITY_EVENT_KINDS = {
     "incoming",
@@ -1018,6 +1019,52 @@ class MeshtasticManager:
             },
             "channels": channels,
         }
+
+    def record_observer_sighting(
+        self,
+        *,
+        session_id: str,
+        subject_node_id: str,
+        observer_profile_id: str,
+        observer_profile_name: str,
+        packet_id: int,
+        seen_at: str,
+        packet_from: str | int | None,
+        packet_to: str | int | None,
+        channel: int | None,
+        portnum: str | int | None,
+        via_mqtt: bool,
+        snr: float | None,
+        rssi: int | None,
+        hop_limit: int | None,
+        hop_start: int | None,
+        relay_node: int | None,
+    ) -> dict[str, Any] | None:
+        """Persist redacted packet evidence for the currently connected subject."""
+        with self._lock:
+            if str(self._profile_id or "").lower() != subject_node_id.lower():
+                return None
+        return self._add_event(
+            "observer_sighting",
+            session_id=session_id,
+            subject_node_id=subject_node_id.lower(),
+            observer_profile_id=observer_profile_id,
+            observer_profile_name=observer_profile_name,
+            packet_id=packet_id,
+            seen_at=seen_at,
+            **{
+                "from": packet_from,
+                "to": packet_to,
+                "channel": channel,
+                "portnum": portnum,
+                "via_mqtt": via_mqtt,
+                "snr": snr,
+                "rssi": rssi,
+                "hop_limit": hop_limit,
+                "hop_start": hop_start,
+                "relay_node": relay_node,
+            },
+        )
 
     def channel_psk(
         self,

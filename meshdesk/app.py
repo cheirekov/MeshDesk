@@ -20,6 +20,7 @@ from meshdesk.manager import (
     MeshtasticManager,
     RequestCooldownError,
 )
+from meshdesk.packet_observers import PacketObserverService
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -132,6 +133,10 @@ class HistoryReplayRequest(BaseModel):
     max_messages: int | None = Field(default=None, ge=1, le=500)
 
 
+class PacketObserverRequest(BaseModel):
+    duration_seconds: int = Field(default=120, ge=30, le=300)
+
+
 class ChannelUpdateRequest(BaseModel):
     role: Literal["PRIMARY", "SECONDARY", "DISABLED"]
     name: str = Field(default="", max_length=10)
@@ -152,16 +157,19 @@ def create_app(
     tcp_discovery: TcpDiscovery | None = None,
     serial_discovery: SerialDiscovery | None = None,
     gateway_diagnostics: GatewayDiagnostics | None = None,
+    packet_observers: PacketObserverService | None = None,
 ) -> FastAPI:
     radio = manager or MeshtasticManager()
     profiles = connection_profiles or ConnectionProfileStore()
     discovery = tcp_discovery or TcpDiscovery()
     usb_discovery = serial_discovery or SerialDiscovery()
     gateway_probe = gateway_diagnostics or GatewayDiagnostics()
+    observer_service = packet_observers or PacketObserverService()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
+        observer_service.stop("shutdown")
         radio.disconnect()
         if hasattr(radio, "pairer"):
             radio.pairer.cancel()
@@ -352,6 +360,7 @@ def create_app(
                         status_code=409,
                         detail="Connection fields differ from the saved profile",
                     )
+            observer_service.stop("connection_switch")
             if request.transport == "tcp":
                 radio.connect_tcp(
                     request.host,
@@ -383,6 +392,7 @@ def create_app(
 
     @api.post("/api/disconnect")
     def disconnect() -> dict:
+        observer_service.stop("disconnect")
         radio.disconnect()
         return radio.status()
 
@@ -639,6 +649,32 @@ def create_app(
                 status_code=502,
                 detail=str(exc) or type(exc).__name__,
             ) from exc
+
+    @api.post("/api/diagnostics/observers/start")
+    def start_packet_observers(request: PacketObserverRequest) -> dict:
+        try:
+            return observer_service.start(
+                profiles.list(),
+                radio,
+                request.duration_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc) or type(exc).__name__,
+            ) from exc
+
+    @api.get("/api/diagnostics/observers/status")
+    def packet_observer_status() -> dict:
+        return observer_service.status()
+
+    @api.post("/api/diagnostics/observers/stop")
+    def stop_packet_observers() -> dict:
+        return observer_service.stop("operator")
 
     @api.post("/api/history/replay", status_code=202)
     def replay_history(request: HistoryReplayRequest) -> dict:

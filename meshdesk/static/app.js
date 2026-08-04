@@ -17,6 +17,7 @@ const state = {
   unread: {},
   chatMessages: {},
   deliveryReceipts: {},
+  observerSightings: {},
   selectedConversation: null,
   closedConversations: new Set(),
   sessionUiCleared: false,
@@ -31,6 +32,8 @@ const state = {
   reconnectActive: false,
   gatewayDiagnostics: null,
   gatewayProbeLoading: false,
+  packetObservation: null,
+  packetObserverLoading: false,
   discoveredTcpDevices: [],
   discoveredSerialDevices: [],
   roleAdvisorTrigger: null,
@@ -881,6 +884,7 @@ function renderConnectionProfiles(selectedId = "") {
     : "";
   updateConnectionProfileUi();
   renderObserverProfiles();
+  renderPacketObservation();
   if (state.status) updateControls(state.status);
   if (state.discoveredTcpDevices.length) renderTcpDiscoveryDetails();
 }
@@ -892,6 +896,9 @@ function renderObserverProfiles() {
     (profile) => profile.transport === "tcp",
   );
   const selected = profiles.filter((profile) => profile.diagnostic_observer);
+  const observerSessionActive = ["starting", "active"].includes(
+    state.packetObservation?.state,
+  );
   summary.textContent = selected.length
     ? `${selected.length} избрани`
     : "Няма избрани";
@@ -904,14 +911,15 @@ function renderObserverProfiles() {
   container.innerHTML = profiles
     .map((profile) => {
       const verified = Boolean(profile.device_id);
+      const selectable = verified && !observerSessionActive;
       const detail = verified
         ? `${profile.device_name || profile.device_id} · ${profile.device_id}`
         : "Свържи профила поне веднъж, за да потвърдиш идентичността";
       return `
-        <label class="observer-profile-option ${verified ? "" : "disabled"}">
+        <label class="observer-profile-option ${selectable ? "" : "disabled"}">
           <input type="checkbox" data-observer-profile-id="${escapeHtml(profile.id)}"
             ${profile.diagnostic_observer ? "checked" : ""}
-            ${verified ? "" : "disabled"}>
+            ${selectable ? "" : "disabled"}>
           <span><strong>${escapeHtml(profile.name)}</strong>
             <small>${escapeHtml(`${profile.host}:${profile.port} · ${detail}`)}</small></span>
         </label>`;
@@ -934,6 +942,11 @@ function connectionProfilePayload(profile, overrides = {}) {
 }
 
 async function toggleDiagnosticObserver(profileId, enabled) {
+  if (["starting", "active"].includes(state.packetObservation?.state)) {
+    renderObserverProfiles();
+    toast("Спри активния Packet observer преди промяна на избора", true);
+    return;
+  }
   const profile = state.connectionProfiles.find((item) => item.id === profileId);
   if (!profile || profile.transport !== "tcp" || !profile.device_id) {
     renderObserverProfiles();
@@ -1029,7 +1042,10 @@ function openConnectionProfileModal() {
         ? $("#bleDevice").selectedOptions[0]?.text || ""
         : $("#serialDevice").selectedOptions[0]?.text || "");
   $("#connectionProfileAutoReconnect").checked = Boolean(profile?.auto_reconnect);
-  const canObserve = values.transport === "tcp" && Boolean(profile?.device_id);
+  const canObserve =
+    values.transport === "tcp" &&
+    Boolean(profile?.device_id) &&
+    !["starting", "active"].includes(state.packetObservation?.state);
   $("#connectionProfileObserverOption").classList.toggle(
     "hidden",
     values.transport !== "tcp",
@@ -1212,6 +1228,13 @@ function updateControls(status) {
   );
   $("#probeGateways").disabled =
     !connected || state.gatewayProbeLoading || !hasObservers;
+  const observerActive = ["starting", "active"].includes(
+    state.packetObservation?.state,
+  );
+  $("#startPacketObservers").disabled =
+    !connected || state.packetObserverLoading || !hasObservers || observerActive;
+  $("#stopPacketObservers").disabled = !observerActive;
+  $("#packetObserverDuration").disabled = observerActive;
   $("#adminTarget").disabled = !connected;
   document.querySelectorAll(".admin-action").forEach((button) => {
     button.disabled = !connected;
@@ -1476,6 +1499,273 @@ function renderGatewayDiagnostics() {
     .join("");
 }
 
+function packetObservationEvidence(packetId, messageTime = null) {
+  if (packetId == null) return null;
+  const current = (state.packetObservation?.sightings || []).find(
+    (sighting) => String(sighting.packet_id) === String(packetId),
+  );
+  const persisted = state.observerSightings[String(packetId)] || [];
+  const messageTimestamp = messageTime ? new Date(messageTime).getTime() : null;
+  const inMessageWindow = (seenAt) => {
+    if (!Number.isFinite(messageTimestamp)) return true;
+    const seenTimestamp = new Date(seenAt).getTime();
+    return (
+      Number.isFinite(seenTimestamp) &&
+      seenTimestamp >= messageTimestamp - 5000 &&
+      seenTimestamp <= messageTimestamp + 10 * 60 * 1000
+    );
+  };
+  const evidence = [];
+  (current?.observers || []).forEach((observer) => {
+    if (!inMessageWindow(observer.first_seen_at || observer.last_seen_at)) return;
+    evidence.push(observer);
+  });
+  persisted.forEach((sighting) => {
+    if (!inMessageWindow(sighting.seen_at || sighting.time)) return;
+    evidence.push({
+      profile_id: sighting.observer_profile_id,
+      profile_name: sighting.observer_profile_name,
+      first_seen_at: sighting.seen_at || sighting.time,
+      last_seen_at: sighting.seen_at || sighting.time,
+      via_mqtt: Boolean(sighting.via_mqtt),
+      snr: sighting.snr,
+      rssi: sighting.rssi,
+      hop_limit: sighting.hop_limit,
+      hop_start: sighting.hop_start,
+      relay_node: sighting.relay_node,
+    });
+  });
+  const unique = new Map();
+  evidence.forEach((observer) => {
+    const key = `${observer.profile_id}:${observer.first_seen_at}`;
+    unique.set(key, observer);
+  });
+  if (!unique.size) return null;
+  return {
+    packet_id: packetId,
+    observers: [...unique.values()],
+  };
+}
+
+function packetObservationCoverage(messageTime) {
+  const selected = state.connectionProfiles.filter(
+    (profile) => profile.transport === "tcp" && profile.diagnostic_observer,
+  );
+  if (!selected.length) {
+    return {
+      state: "not_configured",
+      detail: "Няма избрани TCP наблюдатели за тази MeshDesk инсталация.",
+    };
+  }
+  const session = state.packetObservation;
+  if (!session || session.state === "idle") {
+    return {
+      state: "not_armed",
+      detail: `${selected.length} наблюдатели са избрани, но Packet observer сесия не е стартирана.`,
+    };
+  }
+  const sentAt = new Date(messageTime).getTime();
+  const startedAt = new Date(session.started_at).getTime();
+  const endedAt = new Date(session.ended_at || session.expires_at).getTime();
+  if (Number.isFinite(sentAt) && sentAt < startedAt) {
+    return {
+      state: "outside_window",
+      detail: "Последната налична observer сесия е започнала след изпращането на този packet.",
+    };
+  }
+  if (Number.isFinite(sentAt) && sentAt > endedAt) {
+    return {
+      state: "expired",
+      detail: `Observer сесията е приключила ${new Date(
+        session.ended_at || session.expires_at,
+      ).toLocaleString()} — преди изпращането на този packet.`,
+    };
+  }
+  const armed = (session.observers || []).filter((observer) => {
+    const readyAt = new Date(observer.ready_at || session.started_at).getTime();
+    const completedAt = new Date(
+      observer.completed_at || session.ended_at || session.expires_at,
+    ).getTime();
+    return sentAt >= readyAt && sentAt <= completedAt;
+  });
+  if (!armed.length) {
+    return {
+      state: "not_ready",
+      detail: "При изпращането наблюдателите още са се свързвали или синхронизирали.",
+    };
+  }
+  return {
+    state: session.state === "active" ? "armed_pending" : "not_seen",
+    detail:
+      session.state === "active"
+        ? `${armed.length} наблюдатели са въоръжени; този packet ID още не е видян.`
+        : `${armed.length} наблюдатели са били въоръжени, но не са видели този packet ID в прозореца.`,
+  };
+}
+
+function renderPacketObservation() {
+  const session = state.packetObservation;
+  const status = $("#packetObserverStatus");
+  const container = $("#packetObserverResults");
+  const active = ["starting", "active"].includes(session?.state);
+  const selectedCount = state.connectionProfiles.filter(
+    (profile) => profile.transport === "tcp" && profile.diagnostic_observer,
+  ).length;
+  const chatStatus = $("#chatObserverStatus");
+  chatStatus.className = `observer-chat-status ${
+    active ? "active" : selectedCount ? "warning" : "hidden"
+  }`;
+  if (active) {
+    const readyCount = (session.observers || []).filter(
+      (observer) => observer.status === "ready",
+    ).length;
+    const remainingSeconds = Math.max(
+      0,
+      Math.ceil((new Date(session.expires_at).getTime() - Date.now()) / 1000),
+    );
+    chatStatus.textContent = `◎ ${readyCount}/${session.observers?.length || 0} · ${remainingSeconds}s`;
+    chatStatus.title = "Packet observer е активен. Отвори диагностиката.";
+  } else if (selectedCount) {
+    chatStatus.textContent = session?.state === "completed" ? "◎ Observer изтече" : "◎ Observer off";
+    chatStatus.title =
+      "Има избрани наблюдатели, но няма активна bounded сесия. Отвори диагностиката.";
+  }
+  if (!session || session.state === "idle") {
+    status.textContent = "Не е стартирана bounded наблюдателна сесия.";
+    container.className = "packet-observer-results empty-state";
+    container.textContent =
+      "След старт изчакай наблюдателите да покажат „готов“, преди да изпратиш тестовото съобщение.";
+    if (state.status) updateControls(state.status);
+    return;
+  }
+
+  const ready = (session.observers || []).filter(
+    (observer) => observer.status === "ready",
+  ).length;
+  const packetCount = (session.sightings || []).length;
+  const stateLabels = {
+    starting: "стартиране",
+    active: "активно",
+    completed: "завършено",
+    stopped: "спряно",
+  };
+  const remaining = active
+    ? Math.max(0, Math.ceil((new Date(session.expires_at).getTime() - Date.now()) / 1000))
+    : 0;
+  status.textContent = `${stateLabels[session.state] || session.state} · ${ready}/${
+    session.observers?.length || 0
+  } готови · ${packetCount} packet ID${active ? ` · ${remaining}s` : ""}`;
+
+  const observerRows = (session.observers || [])
+    .map((observer) => {
+      const observerStatusLabels = {
+        starting: "стартира",
+        syncing: "синхронизира",
+        ready: "готов",
+        completed: "завърши",
+        stopped: "спрян",
+        failed: "грешка",
+      };
+      return `
+        <div class="packet-observer-row">
+          <span><strong>${escapeHtml(observer.profile_name)}</strong><small>${escapeHtml(
+            observer.endpoint,
+          )}</small></span>
+          <span class="node-badge ${
+            observer.status === "ready"
+              ? "compatible"
+              : observer.status === "failed"
+                ? "failed"
+                : ""
+          }">${escapeHtml(observerStatusLabels[observer.status] || observer.status)}</span>
+          <span>${escapeHtml(String(observer.sighting_count || 0))} sightings</span>
+          ${
+            observer.error
+              ? `<small class="packet-observer-error">${escapeHtml(observer.error)}</small>`
+              : ""
+          }
+        </div>`;
+    })
+    .join("");
+  const sightingRows = (session.sightings || [])
+    .slice(0, 10)
+    .map((sighting) => {
+      const mqtt = (sighting.observers || []).some((observer) => observer.via_mqtt);
+      return `
+        <div class="packet-sighting-row">
+          <code>${escapeHtml(String(sighting.packet_id))}</code>
+          <span>${escapeHtml(
+            (sighting.observers || []).map((observer) => observer.profile_name).join(", "),
+          )}</span>
+          <span class="node-badge ${mqtt ? "mqtt" : "direct"}">${
+            mqtt ? "MQTT" : "LoRa/local"
+          }</span>
+        </div>`;
+    })
+    .join("");
+  container.className = "packet-observer-results";
+  container.innerHTML = `
+    <div class="packet-observer-list">${observerRows}</div>
+    ${
+      sightingRows
+        ? `<details class="packet-sightings"><summary>Последни packet sightings</summary>${sightingRows}</details>`
+        : '<p class="packet-observer-empty">Няма наблюдавани packet ID в този прозорец.</p>'
+    }`;
+  if (state.status) updateControls(state.status);
+}
+
+async function startPacketObservers() {
+  if (state.packetObserverLoading || state.connection !== "connected") return;
+  state.packetObserverLoading = true;
+  renderPacketObservation();
+  try {
+    state.packetObservation = await api("/api/diagnostics/observers/start", {
+      method: "POST",
+      body: JSON.stringify({
+        duration_seconds: Number($("#packetObserverDuration").value),
+      }),
+    });
+    renderObserverProfiles();
+    renderPacketObservation();
+    toast("Packet observer-ите стартират; изчакай статус „ready“");
+  } catch (error) {
+    toast(`Packet observer-ът не стартира: ${error.message}`, true);
+  } finally {
+    state.packetObserverLoading = false;
+    renderPacketObservation();
+  }
+}
+
+async function stopPacketObservers() {
+  try {
+    state.packetObservation = await api("/api/diagnostics/observers/stop", {
+      method: "POST",
+    });
+    renderObserverProfiles();
+    renderPacketObservation();
+  } catch (error) {
+    toast(`Packet observer-ът не може да бъде спрян: ${error.message}`, true);
+  }
+}
+
+async function pollPacketObservers() {
+  try {
+    const previous = state.packetObservation;
+    const next = await api("/api/diagnostics/observers/status");
+    const previousEvidence = JSON.stringify(previous?.sightings || []);
+    const nextEvidence = JSON.stringify(next.sightings || []);
+    state.packetObservation = next;
+    if (previous?.state !== next.state) renderObserverProfiles();
+    renderPacketObservation();
+    if (previousEvidence !== nextEvidence) {
+      renderChat();
+      if (state.inspector) renderInspector();
+    }
+  } catch {
+    // The next bounded poll can recover after a backend restart.
+  }
+}
+
 async function probeSavedGateways() {
   if (state.gatewayProbeLoading || state.connection !== "connected") return;
   const hasObservers = state.connectionProfiles.some(
@@ -1571,9 +1861,12 @@ function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastE
   closeChannelPreview();
   state.chatMessages = {};
   state.deliveryReceipts = {};
+  state.observerSightings = {};
   state.eventLog = [];
   state.gatewayDiagnostics = null;
   state.gatewayProbeLoading = false;
+  state.packetObservation = null;
+  state.packetObserverLoading = false;
   state.unread = {};
   state.selectedConversation = null;
   state.closedConversations.clear();
@@ -1600,6 +1893,7 @@ function clearDeviceBoundUi(reason = "Disconnected", eventSequence = state.lastE
   renderConfig([]);
   renderUnread();
   renderGatewayDiagnostics();
+  renderPacketObservation();
   $("#events").className = "events empty-state";
   $("#events").textContent = reason;
 }
@@ -1610,9 +1904,12 @@ async function activateProfile(profileId, eventSequence) {
   state.lastEvent = eventSequence || 0;
   state.chatMessages = {};
   state.deliveryReceipts = {};
+  state.observerSightings = {};
   state.eventLog = [];
   state.gatewayDiagnostics = null;
   state.gatewayProbeLoading = false;
+  state.packetObservation = null;
+  state.packetObserverLoading = false;
   state.unread = {};
   state.selectedConversation = null;
   state.closedConversations.clear();
@@ -1630,6 +1927,7 @@ async function activateProfile(profileId, eventSequence) {
   renderConfig([]);
   renderUnread();
   renderGatewayDiagnostics();
+  renderPacketObservation();
   if (!profileId) return;
   try {
     const { events } = await api("/api/history");
@@ -2030,6 +2328,22 @@ function deliveryLabel(message) {
   )}">${escapeHtml(presentation.label)}</span>`;
 }
 
+function messageObservationTime(message) {
+  return message.statusEvent?.time || message.sourceEvent?.time || message.time;
+}
+
+function observerDeliveryBadge(message) {
+  const evidence = packetObservationEvidence(
+    message.packetId ?? message.sourceEvent?.packet?.id,
+    messageObservationTime(message),
+  );
+  if (!evidence) return "";
+  const names = (evidence.observers || []).map((observer) => observer.profile_name);
+  return `<span class="delivery observed" title="Точният packet ID е видян от ${escapeHtml(
+    names.join(", "),
+  )}">◎ ${escapeHtml(String(names.length))}</span>`;
+}
+
 function renderChat() {
   if (!state.selectedConversation && conversationKeys().length) {
     state.selectedConversation = conversationKeys()[0];
@@ -2079,6 +2393,7 @@ function renderChat() {
                     : ""
                 }
                 ${message.direction === "outgoing" ? deliveryLabel(message) : ""}
+                ${message.direction === "outgoing" ? observerDeliveryBadge(message) : ""}
               </div>
             </div>
           </article>`;
@@ -3498,6 +3813,31 @@ function renderDeliveryJourney(message, packetId) {
   if (["relayed", "delivered"].includes(status)) meshState = "confirmed";
   if (["failed", "timeout"].includes(status)) meshState = "failed";
   if (status === "sent") meshState = "unknown";
+  const observationTime = messageObservationTime(message);
+  const observation = packetObservationEvidence(packetId, observationTime);
+  const coverage = packetObservationCoverage(observationTime);
+  const observerNames = (observation?.observers || []).map(
+    (observer) => observer.profile_name,
+  );
+  const observerState = observation
+    ? "confirmed"
+    : coverage.state === "armed_pending"
+      ? "pending"
+      : "unknown";
+  const observerDetail = observation
+    ? `Точният packet ID е видян от: ${observerNames.join(", ")}.`
+    : coverage.detail;
+  const mqttObservers = (observation?.observers || []).filter(
+    (observer) => observer.via_mqtt,
+  );
+  const mqttState = mqttObservers.length ? "confirmed" : "unknown";
+  const mqttDetail = mqttObservers.length
+    ? `Packet-ът е получен с via_mqtt от: ${mqttObservers
+        .map((observer) => observer.profile_name)
+        .join(", ")}.`
+    : observation
+      ? "Наблюдението е LoRa/local; MQTT publish не е доказан."
+      : `TCP evidence липсва (${coverage.state}); MQTT пътят не може да бъде оценен.`;
 
   return `
     <section class="inspector-section">
@@ -3515,9 +3855,14 @@ function renderDeliveryJourney(message, packetId) {
           meshDetail,
         )}
         ${journeyStep(
-          "unknown",
-          "Gateway / MQTT broker",
-          "Няма независим observer, който да потвърди този packet ID извън локалната radio сесия.",
+          observerState,
+          "TCP наблюдател",
+          observerDetail,
+        )}
+        ${journeyStep(
+          mqttState,
+          "MQTT път",
+          mqttDetail,
         )}
         ${journeyStep(
           "unknown",
@@ -5125,6 +5470,7 @@ function eventTitle(event) {
     return `${operationLabel(event)} · ${event.success ? "отговор" : "грешка"}`;
   if (event.kind === "config") return "Конфигурация";
   if (event.kind === "store_forward") return "Store & Forward история";
+  if (event.kind === "observer_sighting") return "Packet observer evidence";
   if (event.kind === "error") return "Грешка";
   return "Състояние";
 }
@@ -5146,6 +5492,17 @@ function markMessagesRead() {
 }
 
 function addChatEvent(event) {
+  if (event.kind === "observer_sighting" && event.packet_id != null) {
+    const key = String(event.packet_id);
+    const sightings = (state.observerSightings[key] ||= []);
+    const evidenceId =
+      event.event_id ||
+      `${event.session_id}:${event.observer_profile_id}:${event.packet_id}`;
+    if (!sightings.some((item) => item.evidenceId === evidenceId)) {
+      sightings.push({ ...event, evidenceId });
+    }
+    return;
+  }
   if ((event.kind === "incoming" || event.kind === "outgoing") && event.text) {
     const key =
       event.kind === "incoming"
@@ -5271,6 +5628,10 @@ function appendEvents(events, { historical = false } = {}) {
         : event.kind === "store_forward"
         ? `Върнати ${event.history_messages ?? 0} съобщения · marker ${
             event.last_request ?? "—"
+          }`
+        : event.kind === "observer_sighting"
+        ? `Packet ${event.packet_id} · ${event.observer_profile_name} · ${
+            event.via_mqtt ? "MQTT" : "LoRa/local"
           }`
         : event.kind === "delivery"
         ? event.error === "NONE"
@@ -5579,6 +5940,13 @@ $("#clearEvents").addEventListener("click", () => {
   $("#events").textContent = "Списъкът е изчистен.";
 });
 $("#probeGateways").addEventListener("click", probeSavedGateways);
+$("#startPacketObservers").addEventListener("click", startPacketObservers);
+$("#stopPacketObservers").addEventListener("click", stopPacketObservers);
+$("#chatObserverStatus").addEventListener("click", () => {
+  const panel = document.querySelector(".diagnostics-panel");
+  panel.open = true;
+  $(".gateway-diagnostics").scrollIntoView({ behavior: "smooth", block: "start" });
+});
 $("#observerProfileList").addEventListener("change", (event) => {
   const input = event.target.closest("[data-observer-profile-id]");
   if (!input) return;
@@ -5618,8 +5986,11 @@ renderRoleAdvisor();
 renderConversations();
 renderChat();
 renderGatewayDiagnostics();
+renderPacketObservation();
+pollPacketObservers();
 setInterval(refreshStatus, 1500);
 setInterval(pollEvents, 1000);
+setInterval(pollPacketObservers, 1000);
 setInterval(pollPairing, 1000);
 setInterval(applyRequestCooldowns, 1000);
 setInterval(() => {

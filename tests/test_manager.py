@@ -1063,6 +1063,53 @@ def test_gateway_diagnostic_context_uses_nonce_bound_channel_signatures():
     assert "private-channel-key" not in str(first)
 
 
+def test_observer_sighting_is_redacted_and_bound_to_connected_subject():
+    manager, _interface = connected_manager()
+
+    event = manager.record_observer_sighting(
+        session_id="session-1",
+        subject_node_id="!87654321",
+        observer_profile_id="observer-1",
+        observer_profile_name="Gateway observer",
+        packet_id=3403877,
+        seen_at="2026-08-04T12:00:00+00:00",
+        packet_from="!87654321",
+        packet_to="^all",
+        channel=1,
+        portnum="TEXT_MESSAGE_APP",
+        via_mqtt=True,
+        snr=None,
+        rssi=None,
+        hop_limit=2,
+        hop_start=3,
+        relay_node=None,
+    )
+
+    assert event["kind"] == "observer_sighting"
+    assert event["packet_id"] == 3403877
+    assert event["via_mqtt"] is True
+    assert "text" not in event
+    assert "payload" not in event
+    assert manager.record_observer_sighting(
+        session_id="wrong-subject",
+        subject_node_id="!11111111",
+        observer_profile_id="observer-1",
+        observer_profile_name="Gateway observer",
+        packet_id=1,
+        seen_at="2026-08-04T12:00:00+00:00",
+        packet_from="!11111111",
+        packet_to="^all",
+        channel=1,
+        portnum="TEXT_MESSAGE_APP",
+        via_mqtt=False,
+        snr=None,
+        rssi=None,
+        hop_limit=None,
+        hop_start=None,
+        relay_node=None,
+    ) is None
+
+
 def test_position_precision_has_operator_facing_summaries():
     assert MeshtasticManager._position_precision_summary(0) == (  # noqa: SLF001
         "0 bits · не споделя позиция"
